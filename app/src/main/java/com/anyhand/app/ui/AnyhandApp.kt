@@ -31,7 +31,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -232,13 +231,19 @@ private fun ServiceStatusRow(enabled: Boolean, onOpenSettings: () -> Unit) {
 @Composable
 private fun LanguageRow(language: String, onChange: (String) -> Unit) {
     val options = listOf("es" to "Español", "en" to "English", "pt" to "Português")
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Idioma:", modifier = Modifier.align(Alignment.CenterVertically))
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Idioma:", style = MaterialTheme.typography.titleSmall)
         options.forEach { (code, label) ->
             if (code == language) {
-                Button(onClick = {}) { Text(label) }
+                Button(
+                    onClick = {},
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(label, maxLines = 1) }
             } else {
-                TextButton(onClick = { onChange(code) }) { Text(label) }
+                TextButton(
+                    onClick = { onChange(code) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(label, maxLines = 1) }
             }
         }
     }
