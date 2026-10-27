@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Anyhand</string>
+    <string name="accessibility_service_description">Anyhand actúa sobre la pantalla por comandos de voz y verifica cada acción.</string>
 </resources>
