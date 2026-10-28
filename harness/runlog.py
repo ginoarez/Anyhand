@@ -25,7 +25,7 @@ class RunLogger:
              "tok": int(tokens), "detail": detail}
         )
 
-    def task_end(self, task, lang, success):
+    def task_end(self, task, lang, success, extra=None):
         parent = os.path.dirname(self.path)
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -36,6 +36,8 @@ class RunLogger:
             "seconds": round(time.time() - self.started, 2),
             "steps": self.steps,
         }
+        if extra:
+            record.update(extra)
         with open(self.path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         return record

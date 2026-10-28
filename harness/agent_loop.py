@@ -35,6 +35,9 @@ def plan(task, width, height):
     if any(w in lower for w in ("escribe", "escribir", "type", "digite",
                                 "escreva", "digitar")):
         return [("tap", cx, height * 0.35), ("text", extract_quoted(task))]
+    if any(w in lower for w in ("ok", "terminar", "finish", "finalizar",
+                                "concluir", "fin", "done", "fim")):
+        return [("tap", cx, height * 0.82)]
     if any(w in lower for w in ("arriba", "up", "cima", "subir")):
         return [("swipe", cx, height * 0.7, cx, height * 0.3, 300)]
     if any(w in lower for w in ("abajo", "down", "baixo", "descer")):
@@ -67,10 +70,16 @@ def execute(action):
     return False, f"acción desconocida: {kind}"
 
 
-def run_task(task, lang="es"):
+def run_task(task, lang="es", setup=(), extra=None, confirm=None):
+    """Ejecuta una tarea. `setup` son acciones previas (no verificadas) para
+    dejar la pantalla lista. `confirm(task)` pide el veredicto manual; el
+    éxito final es auto Y manual."""
     adb_driver.ensure_device()
     width, height = adb_driver.screen_size()
     print(f"pantalla: {width}x{height}")
+    for action in setup:
+        ok, detail = execute(action)
+        print(f"setup: {detail} ok={ok}")
     logger = RunLogger()
     logger.task_start()
     success = True
@@ -99,9 +108,14 @@ def run_task(task, lang="es"):
         if not step_ok:
             success = False
             break
-    record = logger.task_end(task, lang, success)
+    auto = success
+    manual = confirm(task) if confirm else True
+    success = auto and manual
+    record = logger.task_end(task, lang, success,
+                             extra={**(extra or {}), "auto": auto,
+                                    "manual": manual})
     print(f"resultado: {'ÉXITO' if success else 'FALLO'} "
-          f"({record['seconds']}s)")
+          f"(auto={auto} manual={manual} {record['seconds']}s)")
     return success
 
 
