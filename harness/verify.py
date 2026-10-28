@@ -5,10 +5,47 @@ compara dos capturas por fracción de píxeles distintos. Es el mismo criterio
 que `Verifier.changeFraction` en la app (ver agent/Verifier.kt).
 """
 
+import binascii
 import struct
 import zlib
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _chunk(kind, body):
+    head = struct.pack(">I", len(body)) + kind + body
+    return head + struct.pack(">I", binascii.crc32(kind + body) & 0xFFFFFFFF)
+
+
+def shrink_png(data, factor=0.5):
+    """Reduce una captura para el modelo y devuelve
+    (png_chico, ancho, alto, escala). La escala convierte coordenadas
+    del modelo (chicas) a píxeles reales: real = modelo / factor.
+
+    A factor 0.5, la imagen pesa ~1/4 y los tokens de entrada caen en
+    proporción similar. Sin dependencias (el PNG se re-emite a mano).
+    """
+    width, height, pixels = decode_png(data)
+    small_w = max(1, int(width * factor))
+    small_h = max(1, int(height * factor))
+    small = bytearray(small_w * small_h * 3)
+    for y in range(small_h):
+        src_y = min(height - 1, int(y / factor))
+        for x in range(small_w):
+            src_x = min(width - 1, int(x / factor))
+            src = (src_y * width + src_x) * 3
+            dst = (y * small_w + x) * 3
+            small[dst:dst + 3] = pixels[src:src + 3]
+    stride = small_w * 3
+    raw = bytearray()
+    for y in range(small_h):
+        raw.append(0)
+        raw += small[y * stride:(y + 1) * stride]
+    ihdr = struct.pack(">IIBBBBB", small_w, small_h, 8, 2, 0, 0, 0)
+    png = (PNG_SIGNATURE + _chunk(b"IHDR", ihdr)
+           + _chunk(b"IDAT", zlib.compress(bytes(raw)))
+           + _chunk(b"IEND", b""))
+    return png, small_w, small_h, 1.0 / factor
 
 
 def _read_chunks(data):

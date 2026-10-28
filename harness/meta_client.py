@@ -23,8 +23,18 @@ import json
 import os
 import urllib.request
 
+import verify
+
 BASE_URL = os.environ.get("META_BASE_URL", "https://api.meta.ai/v1")
 MODEL = os.environ.get("META_MODEL", "muse-spark-1.3")
+# Factor de reducción de la captura enviada al modelo (0.5 = 1/4 de
+# píxeles ≈ 1/4 de tokens de entrada). Ajustable sin tocar código.
+try:
+    SHRINK = float(os.environ.get("META_SHRINK", "0.5"))
+except ValueError:
+    SHRINK = 0.5
+if not 0.1 <= SHRINK <= 1.0:
+    SHRINK = 0.5
 
 
 class MetaError(RuntimeError):
@@ -74,20 +84,28 @@ COMPUTER_TOOL = {
 }
 
 
-def plan_step(task, lang, png_bytes, width, height, timeout_s=120):
+def plan_step(task, lang, png_bytes, width, height, step=0, cap=10,
+              timeout_s=120):
     """Un paso look-act-look: captura + tarea -> (acción, in_tok, out_tok).
 
+    La captura se reduce (ver SHRINK) antes de enviarla y las coordenadas
+    del modelo se re-escalan a píxeles reales antes de devolverlas.
     Devuelve acción en el formato del stub: ("tap", x, y), ("swipe", ...),
     ("text", s), ("key", code) o ("done",). Lanza MetaError si la API
     falla; quien llama decide el fallback.
     """
-    image_b64 = base64.b64encode(png_bytes).decode("ascii")
+    small_png, small_w, small_h, upscale = verify.shrink_png(
+        png_bytes, SHRINK)
+    image_b64 = base64.b64encode(small_png).decode("ascii")
     prompt = (
         f"Tarea ({lang}): {task}\n"
-        f"La captura mide {width}x{height} píxeles. Devuelve UNA llamada "
-        f"a computer.computer con la siguiente acción física que cumple "
-        f"la tarea. Si la pantalla ya muestra la tarea cumplida, usa "
-        f"action=done. Responde SOLO con la llamada a la herramienta."
+        f"Paso {step + 1} de máximo {cap}. La captura mide "
+        f"{small_w}x{small_h} píxeles: da las coordenadas en ESA escala. "
+        f"Devuelve UNA llamada a computer.computer con la siguiente "
+        f"acción física que cumple la tarea. Si la pantalla ya muestra "
+        f"éxito o finalización (pantalla verde de fin, confirmación "
+        f"visible), usa action=done en vez de tocar nada. Responde SOLO "
+        f"con la llamada a la herramienta."
     )
     body = {
         "model": MODEL,
@@ -119,7 +137,21 @@ def plan_step(task, lang, png_bytes, width, height, timeout_s=120):
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         raise MetaError(f"la API no respondió: {exc}") from exc
-    return parse_response(payload)
+    action, in_tok, out_tok = parse_response(payload)
+    return scale_action(action, upscale), in_tok, out_tok
+
+
+def scale_action(action, upscale):
+    """Coordenadas del modelo (captura chica) -> píxeles reales."""
+    kind = action[0]
+    if kind == "tap":
+        _, x, y = action
+        return ("tap", x * upscale, y * upscale)
+    if kind == "swipe":
+        _, x1, y1, x2, y2, ms = action
+        return ("swipe", x1 * upscale, y1 * upscale,
+                x2 * upscale, y2 * upscale, ms)
+    return action
 
 
 def parse_response(payload):

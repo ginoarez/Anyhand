@@ -113,6 +113,7 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
     logger = RunLogger()
     logger.task_start()
     success = True
+    stuck = 0
     meta_mode = os.environ.get("META_PLANNER", "stub").lower() == "meta"
     planned = plan(task, width, height)
     if meta_mode:
@@ -134,7 +135,8 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
                 break
             try:
                 action, in_tok, out_tok = meta_client.plan_step(
-                    task, lang, model_shot, width, height)
+                    task, lang, model_shot, width, height,
+                    step=index, cap=META_STEPS_CAP)
             except meta_client.MetaError as exc:
                 print(f"Meta falló ({exc}); fallback al stub en este paso")
                 if index < len(planned):
@@ -190,6 +192,15 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
             if attempt == 1:
                 print(f"paso {index}: reintentando una vez")
         index += 1
+        if not step_ok and frac == 0.0:
+            stuck += 1
+        else:
+            stuck = 0
+        if stuck >= 2:
+            print("dos pasos seguidos sin ningún cambio: pantalla "
+                  "atascada, se aborta para no gastar más tokens")
+            success = False
+            break
         if not step_ok:
             success = False
             break

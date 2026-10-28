@@ -72,8 +72,11 @@ calibration (`tok: 0` in every record). With `META_PLANNER=meta` and a
 `MODEL_API_KEY` from dev.meta.ai, each step calls Muse Spark 1.3 via
 `POST https://api.meta.ai/v1/responses` with the `computer.computer`
 tool (official look-act-look recipe), screenshot in, one GUI action out,
-tokens recorded per step. The key lives only in your terminal environment
-(see `.gitignore`: `.env` files are never committed).
+tokens recorded per step. Captures are shrunk to half resolution before
+sending (≈55% fewer input tokens, ~2200/step measured) and coordinates are
+scaled back; the loop aborts after two straight no-change steps. The key
+lives only in your terminal environment (see `.gitignore`: `.env` files
+are never committed).
 
 ## Third-party tools and models
 
