@@ -136,7 +136,11 @@ def main():
     for entry in TASKS:
         package, activity = entry["app"]
         adb_driver.wake()
-        adb_driver.am_start(package, activity)
+        if not adb_driver.am_start(package, activity):
+            print(f"tarea omitida (no abrió {package}/{activity})")
+            rows.append((entry["task"], entry["lang"], entry["group"],
+                         False, None))
+            continue
         time.sleep(SETTLE_SECONDS)
         labels = label_count()
         print(f"\n=== tarea: {entry['task']} [{entry['lang']}] "

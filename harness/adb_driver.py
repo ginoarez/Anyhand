@@ -111,9 +111,17 @@ def uia_dump():
 
 
 def am_start(package, activity):
-    """Abre una actividad, p. ej. nuestra app de prueba."""
+    """Abre una actividad, p. ej. nuestra app de prueba.
+
+    `am start` devuelve 0 incluso cuando falla (p. ej. actividad no
+    exportada), así que se revisa la salida: sin "Starting:" no abrió.
+    """
     proc = _run("shell", "am", "start", "-n", f"{package}/{activity}")
-    return proc.returncode == 0
+    out = (proc.stdout + proc.stderr).decode(errors="replace")
+    if proc.returncode != 0 or "Starting:" not in out:
+        print(f"ERROR al abrir {package}/{activity}:\n{out.strip()}")
+        return False
+    return True
 
 
 def wake():
