@@ -124,6 +124,23 @@ def am_start(package, activity):
     return True
 
 
+def wait_focused(package, timeout_s=20):
+    """Espera (best effort) a que el paquete tenga el foco antes de actuar.
+    Sin esto, los primeros taps caen durante el arranque en frío y no hacen
+    nada. Si el formato de dumpsys no se reconoce, espera igual el timeout
+    y devuelve False, pero NO bloquea: quien llama decide si sigue."""
+    import time
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        proc = _run("shell", "dumpsys", "window")
+        out = proc.stdout.decode(errors="replace")
+        for line in out.splitlines():
+            if "mCurrentFocus" in line and package in line:
+                return True
+        time.sleep(1)
+    return False
+
+
 def force_stop(package):
     """Mata el proceso para que el siguiente `am start` arranque en estado
     fresco. Sin esto, la app de prueba retoma la pantalla 'fin' y los taps

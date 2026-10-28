@@ -142,6 +142,9 @@ def main():
             rows.append((entry["task"], entry["lang"], entry["group"],
                          False, None))
             continue
+        if not adb_driver.wait_focused(package):
+            print("aviso: la app no tomó el foco a tiempo; "
+                  "los primeros taps pueden fallar")
         time.sleep(SETTLE_SECONDS)
         labels = label_count()
         print(f"\n=== tarea: {entry['task']} [{entry['lang']}] "
