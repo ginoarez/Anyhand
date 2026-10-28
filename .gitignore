@@ -13,3 +13,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Secretos locales (API keys): nunca commitear.
+.env
+harness/.env
+# Capturas de pantalla: evidencia local, no pública.
+results/screenshots/

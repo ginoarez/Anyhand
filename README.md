@@ -67,13 +67,17 @@ Full table in `results/summary.md`.
   agent loop, task evaluator.
 - Unit tests (`AgentLogicTest`, 6/6 passing).
 
-The current planner is a keyword stub for driver calibration. The
-integration point for the Muse Spark `computer` tool (Meta Model API) is
-marked `TODO` in `harness/agent_loop.py`.
+Planning has two modes. Default is a keyword stub for free driver
+calibration (`tok: 0` in every record). With `META_PLANNER=meta` and a
+`MODEL_API_KEY` from dev.meta.ai, each step calls Muse Spark 1.3 via
+`POST https://api.meta.ai/v1/responses` with the `computer.computer`
+tool (official look-act-look recipe), screenshot in, one GUI action out,
+tokens recorded per step. The key lives only in your terminal environment
+(see `.gitignore`: `.env` files are never committed).
 
 ## Third-party tools and models
 
-- Meta Model API (planned): Muse Spark `computer` tool for planning.
+- Meta Model API: Muse Spark 1.3 (`computer.computer` tool, Responses API) for planning; stub planner for free calibration.
 - AndroidX libraries (Compose, Activity, Core, Lifecycle).
 - Muse Code (development assistant).
 - Python standard library only for the harness; no third-party packages.
