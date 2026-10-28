@@ -124,6 +124,13 @@ def am_start(package, activity):
     return True
 
 
+def force_stop(package):
+    """Mata el proceso para que el siguiente `am start` arranque en estado
+    fresco. Sin esto, la app de prueba retoma la pantalla 'fin' y los taps
+    de la siguiente tarea caen en una pantalla sin botones."""
+    _run("shell", "am", "force-stop", package)
+
+
 def wake():
     """Enciende la pantalla e intenta quitar el bloqueo (best effort).
     Sin esto, los taps caen en la pantalla de bloqueo y las capturas

@@ -136,6 +136,7 @@ def main():
     for entry in TASKS:
         package, activity = entry["app"]
         adb_driver.wake()
+        adb_driver.force_stop(package)
         if not adb_driver.am_start(package, activity):
             print(f"tarea omitida (no abrió {package}/{activity})")
             rows.append((entry["task"], entry["lang"], entry["group"],
