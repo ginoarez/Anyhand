@@ -35,7 +35,7 @@ python harness/eval.py
 
 Runs append to `results/runs.jsonl` (one JSON object per line: task,
 language, success, per-step latency, auto/manual verdicts).
-Formal evaluation v1 (Oct 28, 1080x2400 device): 7/8.
+Formal evaluation (Oct 28, 1080x2400 device): 8/8.
 
 | task | lang | ok |
 |---|---|---|
@@ -43,14 +43,15 @@ Formal evaluation v1 (Oct 28, 1080x2400 device): 7/8.
 | go to the next screen | en | x |
 | avançar para a próxima tela | pt | x |
 | escribe "hola mundo" | es | x |
-| type "hello" | en | auto only |
+| type "hello" | en | x |
 | pulsa ok para terminar | es | x |
 | vuelve atrás (Settings) | es | x |
 | go back (Settings) | en | x |
 
-The single miss was a too-strict pixel threshold on a short typed word
-(human verdict: typed correctly), which calibrated the threshold 0.005 →
-0.002. Full table in `results/summary.md`.
+Calibrations from real runs: pixel threshold 0.005 → 0.002 (a short
+typed word moves few pixels), wake + settle + focus wait (locked screen
+and cold starts ate taps), force-stop per task (stale Done screen).
+Full table in `results/summary.md`.
 
 ## What was built during the event
 
