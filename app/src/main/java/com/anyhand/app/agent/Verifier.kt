@@ -34,7 +34,9 @@ object Verifier {
         return different.toDouble() / total
     }
 
-    fun changedEnough(before: Bitmap, after: Bitmap, threshold: Double = 0.005): Boolean =
+    // Umbral calibrado en la evaluación del 28 oct: un texto corto ("hello")
+    // cambia ~0.004 de los píxeles; 0.005 lo marcaba como fallo erróneo.
+    fun changedEnough(before: Bitmap, after: Bitmap, threshold: Double = 0.002): Boolean =
         changeFraction(before, after) >= threshold
 
     /** Luminancia media 0..255, útil como chequeo barato de "algo cambió". */

@@ -112,5 +112,8 @@ def change_fraction(before_png, after_png, max_pixels=20000):
     return different / total if total else 0.0
 
 
-def changed_enough(before_png, after_png, threshold=0.005):
+# Umbral calibrado en la evaluación del 28 oct: un texto corto ("hello")
+# cambia ~0.004 de los píxeles; 0.005 lo marcaba como fallo erróneo.
+# Gemelo de Verifier.changedEnough en la app: mantener sincronizados.
+def changed_enough(before_png, after_png, threshold=0.002):
     return change_fraction(before_png, after_png) >= threshold
