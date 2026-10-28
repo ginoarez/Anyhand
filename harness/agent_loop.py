@@ -12,11 +12,15 @@ Meta Model API. El punto de integración es la función plan().
 """
 
 import argparse
+import os
 import time
 
 import adb_driver
+import meta_client
 import verify
 from runlog import RunLogger
+
+META_STEPS_CAP = 10
 
 
 def plan(task, width, height):
@@ -109,7 +113,43 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
     logger = RunLogger()
     logger.task_start()
     success = True
-    for index, action in enumerate(plan(task, width, height)):
+    meta_mode = os.environ.get("META_PLANNER", "stub").lower() == "meta"
+    planned = plan(task, width, height)
+    if meta_mode:
+        print(f"planificador: Meta Model API ({meta_client.MODEL})")
+    index = 0
+    while True:
+        if meta_mode:
+            if index >= META_STEPS_CAP:
+                print(f"límite de {META_STEPS_CAP} pasos con Meta")
+                success = False
+                break
+            try:
+                model_shot = adb_driver.screenshot_png()
+            except RuntimeError:
+                model_shot = None
+            if model_shot is None:
+                print("sin captura para el modelo; tarea fallida")
+                success = False
+                break
+            try:
+                action, in_tok, out_tok = meta_client.plan_step(
+                    task, lang, model_shot, width, height)
+            except meta_client.MetaError as exc:
+                print(f"Meta falló ({exc}); fallback al stub en este paso")
+                if index < len(planned):
+                    action = planned[index]
+                else:
+                    action = ("tap", width / 2, height / 2)
+                in_tok = out_tok = 0
+            if action[0] == "done":
+                print("el modelo declara la tarea cumplida")
+                break
+        else:
+            if index >= len(planned):
+                break
+            action = planned[index]
+            in_tok = out_tok = 0
         if requires_confirmation(task) and not ask_gate(task, action):
             logger.step(index, False, 0,
                         detail=f"{action[0]} bloqueado por el gate")
@@ -140,13 +180,16 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
             step_ok = ok and changed
             tag = "" if attempt == 1 else " (reintento)"
             logger.step(index, step_ok, latency_ms,
+                        tokens=in_tok + out_tok,
                         detail=f"{detail} cambio={frac:.4f}{tag}")
             print(f"paso {index}{tag}: {detail} ok={step_ok} "
-                  f"{latency_ms:.0f}ms cambio={frac:.4f}")
+                  f"{latency_ms:.0f}ms cambio={frac:.4f} "
+                  f"tok={in_tok + out_tok}")
             if step_ok:
                 break
             if attempt == 1:
                 print(f"paso {index}: reintentando una vez")
+        index += 1
         if not step_ok:
             success = False
             break
