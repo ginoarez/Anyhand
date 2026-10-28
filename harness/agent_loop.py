@@ -70,10 +70,35 @@ def execute(action):
     return False, f"acción desconocida: {kind}"
 
 
+# Gemelo de ConfirmationGate en la app: mismas palabras, mismo criterio.
+# Ninguna tarea de la evaluación formal las contiene, así que el 8/8 no
+# cambia; el gate solo salta con tareas nuevas irreversibles.
+IRREVERSIBLE = ("enviar", "send", "pagar", "pay", "borrar", "delete",
+                "excluir", "eliminar", "comprar", "buy", "llamar", "call",
+                "ligar")
+
+MAX_ATTEMPTS = 2
+
+
+def requires_confirmation(task):
+    lower = task.lower()
+    return any(word in lower for word in IRREVERSIBLE)
+
+
+def ask_gate(task, action):
+    while True:
+        answer = input(f"acción posiblemente irreversible en «{task}» "
+                       f"({action[0]}). ¿permitir? [s/n]: ").strip().lower()
+        if answer in ("s", "y", "sim", "yes"):
+            return True
+        if answer in ("n", "no", "não", "not"):
+            return False
+
+
 def run_task(task, lang="es", setup=(), extra=None, confirm=None):
     """Ejecuta una tarea. `setup` son acciones previas (no verificadas) para
     dejar la pantalla lista. `confirm(task)` pide el veredicto manual; el
-    éxito final es auto Y manual."""
+    éxito final es auto Y manual. Cada paso fallido se reintenta una vez."""
     adb_driver.ensure_device()
     adb_driver.wake()
     width, height = adb_driver.screen_size()
@@ -85,30 +110,43 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
     logger.task_start()
     success = True
     for index, action in enumerate(plan(task, width, height)):
-        try:
-            before = adb_driver.screenshot_png()
-        except RuntimeError:
-            before = None
-        start = time.time()
-        ok, detail = execute(action)
-        latency_ms = (time.time() - start) * 1000
-        try:
-            after = adb_driver.screenshot_png()
-        except RuntimeError:
-            after = None
-        if before is not None and after is not None:
-            if before == after:
-                print("aviso: capturas idénticas byte a byte "
-                      "(¿pantalla bloqueada o app congelada?)")
-            changed = verify.changed_enough(before, after)
-            frac = verify.change_fraction(before, after)
-        else:
-            changed, frac = ok, 0.0
-        step_ok = ok and changed
-        logger.step(index, step_ok, latency_ms,
-                    detail=f"{detail} cambio={frac:.4f}")
-        print(f"paso {index}: {detail} ok={step_ok} "
-              f"{latency_ms:.0f}ms cambio={frac:.4f}")
+        if requires_confirmation(task) and not ask_gate(task, action):
+            logger.step(index, False, 0,
+                        detail=f"{action[0]} bloqueado por el gate")
+            print(f"paso {index}: bloqueado por el gate")
+            success = False
+            break
+        step_ok = False
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                before = adb_driver.screenshot_png()
+            except RuntimeError:
+                before = None
+            start = time.time()
+            ok, detail = execute(action)
+            latency_ms = (time.time() - start) * 1000
+            try:
+                after = adb_driver.screenshot_png()
+            except RuntimeError:
+                after = None
+            if before is not None and after is not None:
+                if before == after:
+                    print("aviso: capturas idénticas byte a byte "
+                          "(¿pantalla bloqueada o app congelada?)")
+                changed = verify.changed_enough(before, after)
+                frac = verify.change_fraction(before, after)
+            else:
+                changed, frac = ok, 0.0
+            step_ok = ok and changed
+            tag = "" if attempt == 1 else " (reintento)"
+            logger.step(index, step_ok, latency_ms,
+                        detail=f"{detail} cambio={frac:.4f}{tag}")
+            print(f"paso {index}{tag}: {detail} ok={step_ok} "
+                  f"{latency_ms:.0f}ms cambio={frac:.4f}")
+            if step_ok:
+                break
+            if attempt == 1:
+                print(f"paso {index}: reintentando una vez")
         if not step_ok:
             success = False
             break
