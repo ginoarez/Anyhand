@@ -75,6 +75,7 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
     dejar la pantalla lista. `confirm(task)` pide el veredicto manual; el
     éxito final es auto Y manual."""
     adb_driver.ensure_device()
+    adb_driver.wake()
     width, height = adb_driver.screen_size()
     print(f"pantalla: {width}x{height}")
     for action in setup:
@@ -96,6 +97,9 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
         except RuntimeError:
             after = None
         if before is not None and after is not None:
+            if before == after:
+                print("aviso: capturas idénticas byte a byte "
+                      "(¿pantalla bloqueada o app congelada?)")
             changed = verify.changed_enough(before, after)
             frac = verify.change_fraction(before, after)
         else:

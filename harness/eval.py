@@ -19,9 +19,12 @@ herramienta `computer` de Muse Spark (TODO en agent_loop.py).
 
 import datetime
 import os
+import time
 
 import adb_driver
 import agent_loop
+
+SETTLE_SECONDS = 2.0
 
 TEST_PACKAGE = "com.anyhand.app"
 TEST_ACTIVITY = ".unlabeled.UnlabeledTestActivity"
@@ -124,11 +127,17 @@ def write_summary(rows, path="results/summary.md"):
 
 def main():
     adb_driver.ensure_device()
+    adb_driver.wake()
+    if adb_driver.screen_on() is False:
+        print("aviso: la pantalla sigue apagada; sube el tiempo de "
+              "suspensión en Ajustes > Pantalla o mantenla despierta.")
     width, height = adb_driver.screen_size()
     rows = []
     for entry in TASKS:
         package, activity = entry["app"]
+        adb_driver.wake()
         adb_driver.am_start(package, activity)
+        time.sleep(SETTLE_SECONDS)
         labels = label_count()
         print(f"\n=== tarea: {entry['task']} [{entry['lang']}] "
               f"({entry['group']}, nodos={labels}) ===")

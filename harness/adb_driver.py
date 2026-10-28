@@ -114,3 +114,22 @@ def am_start(package, activity):
     """Abre una actividad, p. ej. nuestra app de prueba."""
     proc = _run("shell", "am", "start", "-n", f"{package}/{activity}")
     return proc.returncode == 0
+
+
+def wake():
+    """Enciende la pantalla e intenta quitar el bloqueo (best effort).
+    Sin esto, los taps caen en la pantalla de bloqueo y las capturas
+    salen idénticas: cambio=0.0000 en todos los pasos."""
+    _run("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    _run("shell", "wm", "dismiss-keyguard")
+
+
+def screen_on():
+    """True/False según el display, None si no se pudo saber."""
+    proc = _run("shell", "dumpsys", "display")
+    out = proc.stdout.decode(errors="replace")
+    if "mScreenState=ON" in out:
+        return True
+    if "mScreenState=OFF" in out:
+        return False
+    return None
