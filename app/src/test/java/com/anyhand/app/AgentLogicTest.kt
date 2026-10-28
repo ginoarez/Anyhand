@@ -58,6 +58,15 @@ class AgentLogicTest {
     }
 
     @Test
+    fun stubPlanner_buildsFinishPlan() {
+        val plan = StubPlanner.plan("pulsa ok para terminar", 1080, 2400)
+        assertEquals(1, plan.size)
+        val tap = plan.first() as AgentAction.Tap
+        assertEquals(540f, tap.x, 0.01f)
+        assertEquals(2400 * 0.82f, tap.y, 0.01f)
+    }
+
+    @Test
     fun runLog_emitsOneJsonLine() {
         val run = AgentRun(
             task = "next",
