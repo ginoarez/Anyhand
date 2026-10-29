@@ -221,31 +221,6 @@ fun AnyhandApp() {
     // El micrófono no pisa YouTube, audios ni llamadas: mientras otro audio
     // suena, la escucha se pausa sola y vuelve al terminar.
     var audioDucked by remember { mutableStateOf(false) }
-    DisposableEffect(Unit) {
-        val manager = context.getSystemService(
-            android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-        val callback = object : android.media.AudioManager.AudioPlaybackCallback() {
-            override fun onPlaybackConfigChanged(
-                configs: List<android.media.AudioPlaybackConfiguration>
-            ) {
-                val otherAudio = configs.any { it.isActive }
-                if (otherAudio && voiceActive && !audioDucked) {
-                    audioDucked = true
-                    android.util.Log.d("AnyhandVoice", "pausa por audio externo")
-                    try {
-                        recognizer?.stopListening()
-                    } catch (_: Exception) {
-                    }
-                } else if (!otherAudio && audioDucked && voiceActive) {
-                    audioDucked = false
-                    android.util.Log.d("AnyhandVoice", "vuelve tras audio externo")
-                    startListeningInternal()
-                }
-            }
-        }
-        manager.registerAudioPlaybackCallback(callback, null)
-        onDispose { manager.unregisterAudioPlaybackCallback(callback) }
-    }
 
     fun hearError(): String = if (voiceActive) {
         t(language, "No te escuché, repite la orden.",
@@ -399,6 +374,36 @@ fun AnyhandApp() {
                 lastResult = hearError()
             }
         }
+    }
+
+    // Pausa ante audio externo (DESPUÉS de declarar startListeningInternal:
+    // las funciones locales no se ven antes de su punto de declaración).
+    // Se pregunta por las reproducciones ACTIVAS del sistema en vez de la
+    // lista cruda: AudioPlaybackConfiguration no tiene isActive().
+    DisposableEffect(Unit) {
+        val manager = context.getSystemService(
+            android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val callback = object : android.media.AudioManager.AudioPlaybackCallback() {
+            override fun onPlaybackConfigChanged(
+                configs: List<android.media.AudioPlaybackConfiguration>
+            ) {
+                val otherAudio = manager.activePlaybackConfigurations.isNotEmpty()
+                if (otherAudio && voiceActive && !audioDucked) {
+                    audioDucked = true
+                    android.util.Log.d("AnyhandVoice", "pausa por audio externo")
+                    try {
+                        recognizer?.stopListening()
+                    } catch (_: Exception) {
+                    }
+                } else if (!otherAudio && audioDucked && voiceActive) {
+                    audioDucked = false
+                    android.util.Log.d("AnyhandVoice", "vuelve tras audio externo")
+                    startListeningInternal()
+                }
+            }
+        }
+        manager.registerAudioPlaybackCallback(callback, null)
+        onDispose { manager.unregisterAudioPlaybackCallback(callback) }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
