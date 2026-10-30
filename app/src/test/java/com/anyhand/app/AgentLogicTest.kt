@@ -8,10 +8,12 @@ import com.anyhand.app.agent.ConfirmationGate
 import com.anyhand.app.agent.ActionMapper
 import com.anyhand.app.agent.AgentState
 import com.anyhand.app.agent.KeyMapper
-import com.anyhand.app.ui.containsWakeWord
-import com.anyhand.app.ui.stripWakeWord
+import com.anyhand.app.agent.containsWakeWord
+import com.anyhand.app.agent.stripWakeWord
 import com.anyhand.app.agent.StatusText
 import com.anyhand.app.agent.StubPlanner
+import com.anyhand.app.agent.VoicePolicy
+import com.anyhand.app.agent.VoiceStep
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -94,6 +96,79 @@ class AgentLogicTest {
         assertTrue(containsWakeWord("Anyhan cierra la aplicación"))
         assertEquals("cierra la aplicación",
             stripWakeWord("Anyhan cierra la aplicación"))
+    }
+
+    @Test
+    fun voicePolicy_handsFreeArmsOnWakeThenAcceptsOrder() {
+        val policy = VoicePolicy()
+        policy.openVoice(requireWake = true, quiet = true)
+        // Habla sin la palabra: se ignora y se sigue escuchando.
+        assertEquals(VoiceStep.KeepListening, policy.onHeard("hola qué tal"))
+        assertFalse(policy.awaitingOrder)
+        // Solo la palabra: se arma y espera la orden directa.
+        assertEquals(VoiceStep.WakeArmed, policy.onHeard("Any Hand"))
+        assertTrue(policy.awaitingOrder)
+        // La orden directa entra sin repetir la palabra.
+        assertEquals(
+            VoiceStep.Accept("cierra la aplicación"),
+            policy.onHeard("cierra la aplicación"))
+        assertFalse(policy.awaitingOrder)
+    }
+
+    @Test
+    fun voicePolicy_tapNeedsNoWakeWord() {
+        val policy = VoicePolicy()
+        policy.openTap()
+        assertEquals(
+            VoiceStep.Accept("cierra la aplicación"),
+            policy.onHeard("cierra la aplicación"))
+        assertEquals(
+            VoiceStep.Accept("cierra la aplicación"),
+            policy.onHeard("Anyhan cierra la aplicación"))
+    }
+
+    @Test
+    fun voicePolicy_givesUpAfterThreeFailures() {
+        val policy = VoicePolicy()
+        policy.openTap()
+        assertEquals(VoiceStep.KeepListening, policy.onFailure())
+        assertEquals(VoiceStep.KeepListening, policy.onFailure())
+        assertEquals(VoiceStep.KeepListening, policy.onFailure())
+        assertEquals(VoiceStep.GiveUp, policy.onFailure())
+        assertEquals(VoiceStep.GiveUp, policy.onHeard(null))
+    }
+
+    @Test
+    fun wakeWord_customWordVariantsAndStrip() {
+        assertTrue(containsWakeWord("oye ana abre ajustes", "Ana"))
+        assertFalse(containsWakeWord("abre ajustes", "Ana"))
+        assertEquals("abre ajustes",
+            stripWakeWord("Ana abre ajustes", "Ana"))
+        // Forma con espacio de la palabra por defecto.
+        assertEquals("cierra la aplicación",
+            stripWakeWord("Any hand cierra la aplicación"))
+    }
+
+    @Test
+    fun voicePolicy_customWakeWordArmsAndAccepts() {
+        val policy = VoicePolicy("computadora")
+        policy.openVoice(requireWake = true, quiet = true)
+        assertEquals(VoiceStep.KeepListening, policy.onHeard("hola"))
+        assertEquals(VoiceStep.WakeArmed, policy.onHeard("computadora"))
+        assertEquals(
+            VoiceStep.Accept("cierra la aplicación"),
+            policy.onHeard("cierra la aplicación"))
+    }
+
+    @Test
+    fun voicePolicy_awaitingOrderToleratesMoreFailures() {
+        val policy = VoicePolicy()
+        policy.openVoice(requireWake = true, quiet = true)
+        assertEquals(VoiceStep.WakeArmed, policy.onHeard("Anyhand"))
+        repeat(8) {
+            assertEquals(VoiceStep.KeepListening, policy.onFailure())
+        }
+        assertEquals(VoiceStep.GiveUp, policy.onFailure())
     }
 
     @Test
