@@ -5,8 +5,12 @@ Uso:
 
 Grupo sin etiquetas: nuestra app de prueba (propia, construida en el evento).
 Grupo con etiquetas: app del sistema (Ajustes), con conteo de nodos como
-evidencia de que las etiquetas existen. Nada comercial, nada político
-ni de guerra (ver AGENTS.md §8).
+evidencia de que las etiquetas existen.
+Grupo app-real: Instagram de verdad (excepción pedida por el usuario a la
+regla de "nada comercial" de AGENTS.md §8): abrir, entrar a mensajes,
+buscar "meta" y enviar "Hellooo, First test". Solo corre con
+META_PLANNER=meta (el stub no sabe navegar apps reales); con stub se omite
+sin contar en el total, así el 8/8 de calibración no cambia.
 
 Cada tarea registra en results/runs.jsonl el veredicto automático (cambio
 visible) Y el manual (persona mirando la pantalla). Al final se escribe
@@ -17,6 +21,7 @@ no la inteligencia del modelo. La evaluación de inteligencia llega con la
 herramienta `computer` de Muse Spark (TODO en agent_loop.py).
 """
 
+import argparse
 import datetime
 import os
 import time
@@ -30,6 +35,7 @@ TEST_PACKAGE = "com.anyhand.app"
 TEST_ACTIVITY = ".unlabeled.UnlabeledTestActivity"
 SETTINGS_PACKAGE = "com.android.settings"
 SETTINGS_ACTIVITY = ".Settings"
+INSTAGRAM_PACKAGE = "com.instagram.android"
 
 # (tarea, idioma, grupo, setup, app_para_abrir)
 TAP_NEXT = ("tap", 0.5, 0.82)  # proporciones; se escalan a la pantalla
@@ -73,6 +79,14 @@ TASKS = [
     {"task": "go back", "lang": "en",
      "group": "con-etiquetas", "app": (SETTINGS_PACKAGE, SETTINGS_ACTIVITY),
      "setup": []},
+    # Grupo app-real: Instagram de verdad. Requiere sesión iniciada en el
+    # teléfono y META_PLANNER=meta con MODEL_API_KEY. El gate pregunta una
+    # vez por tarea porque el mensaje sí se envía de tu cuenta.
+    {"task": 'abre Instagram, entra a mensajes, busca "meta" y mándale '
+             '"Hellooo, First test"',
+     "lang": "es", "group": "app-real",
+     "app": (INSTAGRAM_PACKAGE, None),
+     "setup": [], "needs_meta": True},
 ]
 
 
@@ -126,18 +140,37 @@ def write_summary(rows, path="results/summary.md"):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--solo", default=None,
+                        help="corre solo un grupo (p. ej. --solo app-real)")
+    args = parser.parse_args()
+    entries = [e for e in TASKS
+               if args.solo is None or e["group"] == args.solo]
+    if args.solo is not None and not entries:
+        print(f"no hay tareas del grupo «{args.solo}»")
+        return
     adb_driver.ensure_device()
     adb_driver.wake()
     if adb_driver.screen_on() is False:
         print("aviso: la pantalla sigue apagada; sube el tiempo de "
               "suspensión en Ajustes > Pantalla o mantenla despierta.")
     width, height = adb_driver.screen_size()
+    print(f"harness rev {adb_driver.REV}")
     rows = []
-    for entry in TASKS:
+    for entry in entries:
         package, activity = entry["app"]
+        if entry.get("needs_meta") and os.environ.get(
+                "META_PLANNER", "stub").lower() != "meta":
+            print(f"tarea omitida (necesita META_PLANNER=meta): "
+                  f"{entry['task']}")
+            continue
         adb_driver.wake()
         adb_driver.force_stop(package)
-        if not adb_driver.am_start(package, activity):
+        if activity is None:
+            opened = adb_driver.launch_package(package)
+        else:
+            opened = adb_driver.am_start(package, activity)
+        if not opened:
             print(f"tarea omitida (no abrió {package}/{activity})")
             rows.append((entry["task"], entry["lang"], entry["group"],
                          False, None))
@@ -168,4 +201,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\ninterrumpido con Ctrl+C; lo corrido quedó en "
+              "results/runs.jsonl")

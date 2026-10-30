@@ -85,11 +85,16 @@ COMPUTER_TOOL = {
 
 
 def plan_step(task, lang, png_bytes, width, height, step=0, cap=10,
-              timeout_s=120):
+              timeout_s=120, history=(), ui_elements=()):
     """Un paso look-act-look: captura + tarea -> (acción, in_tok, out_tok).
 
     La captura se reduce (ver SHRINK) antes de enviarla y las coordenadas
     del modelo se re-escalan a píxeles reales antes de devolverlas.
+    `history` trae los últimos pasos ("tap 534 2062 cambio=0.3027")
+    para que el modelo corrija el rumbo en vez de repetir a ciegas.
+    `ui_elements` trae ("etiqueta", x, y) en píxeles reales desde
+    uiautomator: se re-escalan a la captura para que el modelo elija por
+    nombre en vez de adivinar píxeles.
     Devuelve acción en el formato del stub: ("tap", x, y), ("swipe", ...),
     ("text", s), ("key", code) o ("done",). Lanza MetaError si la API
     falla; quien llama decide el fallback.
@@ -105,8 +110,34 @@ def plan_step(task, lang, png_bytes, width, height, step=0, cap=10,
         f"acción física que cumple la tarea. Si la pantalla ya muestra "
         f"éxito o finalización (pantalla verde de fin, confirmación "
         f"visible), usa action=done en vez de tocar nada. Responde SOLO "
-        f"con la llamada a la herramienta."
+        f"con la llamada a la herramienta. Si la tarea pide ir a mensajes "
+        f"o al chat, toca el ícono de mensajes de arriba a la derecha; no "
+        f"toques fotos, videos, historias ni la barra inferior. Si "
+        f"escribiste en un buscador y el teclado sigue abierto, ciérralo "
+        f"con Back antes de tocar resultados."
     )
+    elements = list(ui_elements)[:30]
+    if elements:
+        items = []
+        for label, ex, ey in elements:
+            items.append(f"- «{label}» en "
+                         f"({ex * small_w / width:.0f}, "
+                         f"{ey * small_h / height:.0f})")
+        prompt += (
+            "\nElementos tocables con etiqueta (misma escala de la "
+            "captura):\n" + "\n".join(items) +
+            "\nSi alguno sirve para la tarea, toca SUS coordenadas "
+            "exactas en vez de adivinar píxeles."
+        )
+    recent = list(history)[-4:]
+    if recent:
+        prompt += (
+            "\nYa intentaste (de más viejo a más nuevo): "
+            + "; ".join(recent)
+            + ". No repitas toques que no abrieron nada: corrige el rumbo "
+              "(por ejemplo, el buzón de mensajes suele estar arriba a la "
+              "derecha, no en la barra inferior)."
+        )
     body = {
         "model": MODEL,
         "store": False,

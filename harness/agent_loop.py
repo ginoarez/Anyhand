@@ -36,6 +36,9 @@ def plan(task, width, height):
         return [("tap", cx, height * 0.82)]
     if any(w in lower for w in ("atrás", "atras", "back", "voltar")):
         return [("key", "KEYCODE_BACK")]
+    if any(w in lower for w in ("cierra", "cerrar", "close", "feche",
+                                "fechar", "salir", "sair", "exit")):
+        return [("key", "KEYCODE_BACK")]
     if any(w in lower for w in ("escribe", "escribir", "type", "digite",
                                 "escreva", "digitar")):
         return [("tap", cx, height * 0.35), ("text", extract_quoted(task))]
@@ -75,13 +78,20 @@ def execute(action):
 
 
 # Gemelo de ConfirmationGate en la app: mismas palabras, mismo criterio.
-# Ninguna tarea de la evaluación formal las contiene, así que el 8/8 no
-# cambia; el gate solo salta con tareas nuevas irreversibles.
+# Las 8 tareas de calibración no las contienen, así que ese conteo no
+# cambia; el gate salta con tareas nuevas irreversibles (como el mensaje
+# de Instagram) y pregunta una sola vez por tarea.
 IRREVERSIBLE = ("enviar", "send", "pagar", "pay", "borrar", "delete",
                 "excluir", "eliminar", "comprar", "buy", "llamar", "call",
-                "ligar")
+                "ligar", "manda", "mande", "mandar", "mensaje", "mensagem",
+                "message")
 
 MAX_ATTEMPTS = 2
+
+# Replanes por tarea: cuando el toque entra (adb ok) pero no cambia nada,
+# se pide OTRA acción al modelo en vez de re-tocar el punto muerto.
+# Acotado para no quemar tokens en bucle.
+MAX_REPLANS = 2
 
 
 def requires_confirmation(task):
@@ -107,6 +117,9 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
     adb_driver.wake()
     width, height = adb_driver.screen_size()
     print(f"pantalla: {width}x{height}")
+    # La pantalla no debe apagarse a media corrida larga: se sube el
+    # timeout a 10 min y se restaura al terminar (best effort).
+    prev_timeout = adb_driver.keep_awake()
     for action in setup:
         ok, detail = execute(action)
         print(f"setup: {detail} ok={ok}")
@@ -114,12 +127,75 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
     logger.task_start()
     success = True
     stuck = 0
+    hist = []
+    replans = 0
     meta_mode = os.environ.get("META_PLANNER", "stub").lower() == "meta"
     planned = plan(task, width, height)
+    if requires_confirmation(task):
+        # Una sola aprobación por tarea: ya no se pregunta en cada paso.
+        print(f"«{task}» incluye una acción posiblemente irreversible.")
+        if not ask_gate(task, ("tarea completa",)):
+            record = logger.task_end(
+                task, lang, False,
+                extra={**(extra or {}), "auto": False, "manual": False})
+            print(f"resultado: FALLO (bloqueado por el gate "
+                  f"{record['seconds']}s)")
+            adb_driver.restore_awake(prev_timeout)
+            return False
     if meta_mode:
         print(f"planificador: Meta Model API ({meta_client.MODEL})")
+    def do_attempt(action, in_tok, out_tok, tag):
+        """Ejecuta una acción y la verifica. Devuelve (step_ok, ok, frac).
+
+        `ok` es éxito adb (el toque entró); `step_ok` exige además cambio
+        visible. Se separan en el log: mezclarlos escondió puntos muertos.
+        En modo Meta se reutiliza la captura del modelo como "antes".
+        """
+        nonlocal hist
+        try:
+            before = (model_shot if meta_mode
+                      else adb_driver.screenshot_png())
+        except RuntimeError:
+            before = None
+        # Wake pegado a la acción: la llamada al modelo tarda decenas de
+        # segundos y la pantalla puede haberse dormido en ese hueco.
+        adb_driver.wake()
+        start = time.time()
+        ok, detail = execute(action)
+        latency_ms = (time.time() - start) * 1000
+        try:
+            after = adb_driver.screenshot_png()
+        except RuntimeError:
+            after = None
+        if before is not None and after is not None:
+            if before == after:
+                print("aviso: capturas idénticas byte a byte "
+                      "(¿pantalla bloqueada o app congelada?)")
+            changed = verify.changed_enough(before, after)
+            frac = verify.change_fraction(before, after)
+        else:
+            changed, frac = ok, 0.0
+        step_ok = ok and changed
+        logger.step(index, step_ok, latency_ms,
+                    tokens=in_tok + out_tok,
+                    detail=f"{detail} cambio={frac:.4f}{tag}")
+        print(f"paso {index}{tag}: {detail} adb={ok} "
+              f"{latency_ms:.0f}ms cambio={frac:.4f} "
+              f"tok={in_tok + out_tok} -> "
+              f"{'CAMBIO' if step_ok else 'SIN_CAMBIO'}")
+        # Los cambios mínimos (<0.01) suelen ser ruido (videos, shimmer):
+        # se marcan para que el modelo no insista en ese punto.
+        noise = " (apenas ruido)" if frac < 0.01 else ""
+        hist.append(f"{detail} cambio={frac:.4f}{noise}")
+        hist = hist[-10:]
+        return step_ok, ok, frac
+
     index = 0
     while True:
+        # Las corridas con Meta duran minutos y la pantalla puede
+        # apagarse a media tarea. Despertarla en cada paso es barato
+        # e inofensivo si ya está on.
+        adb_driver.wake()
         if meta_mode:
             if index >= META_STEPS_CAP:
                 print(f"límite de {META_STEPS_CAP} pasos con Meta")
@@ -134,9 +210,18 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
                 success = False
                 break
             try:
+                dump = adb_driver.uia_dump()
+            except RuntimeError:
+                dump = None
+            ui_elements = (adb_driver.labeled_clickables(dump, 30)
+                           if dump else [])
+            if ui_elements:
+                print(f"elementos con etiqueta: {len(ui_elements)}")
+            try:
                 action, in_tok, out_tok = meta_client.plan_step(
                     task, lang, model_shot, width, height,
-                    step=index, cap=META_STEPS_CAP)
+                    step=index, cap=META_STEPS_CAP, history=hist,
+                    ui_elements=ui_elements)
             except meta_client.MetaError as exc:
                 print(f"Meta falló ({exc}); fallback al stub en este paso")
                 if index < len(planned):
@@ -152,45 +237,69 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
                 break
             action = planned[index]
             in_tok = out_tok = 0
-        if requires_confirmation(task) and not ask_gate(task, action):
-            logger.step(index, False, 0,
-                        detail=f"{action[0]} bloqueado por el gate")
-            print(f"paso {index}: bloqueado por el gate")
-            success = False
-            break
         step_ok = False
+        ok = False
+        frac = 0.0
         for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                before = adb_driver.screenshot_png()
-            except RuntimeError:
-                before = None
-            start = time.time()
-            ok, detail = execute(action)
-            latency_ms = (time.time() - start) * 1000
-            try:
-                after = adb_driver.screenshot_png()
-            except RuntimeError:
-                after = None
-            if before is not None and after is not None:
-                if before == after:
-                    print("aviso: capturas idénticas byte a byte "
-                          "(¿pantalla bloqueada o app congelada?)")
-                changed = verify.changed_enough(before, after)
-                frac = verify.change_fraction(before, after)
-            else:
-                changed, frac = ok, 0.0
-            step_ok = ok and changed
             tag = "" if attempt == 1 else " (reintento)"
-            logger.step(index, step_ok, latency_ms,
-                        tokens=in_tok + out_tok,
-                        detail=f"{detail} cambio={frac:.4f}{tag}")
-            print(f"paso {index}{tag}: {detail} ok={step_ok} "
-                  f"{latency_ms:.0f}ms cambio={frac:.4f} "
-                  f"tok={in_tok + out_tok}")
+            step_ok, ok, frac = do_attempt(action, in_tok, out_tok, tag)
             if step_ok:
                 break
+            if not ok:
+                # Fallo a nivel adb (el toque ni entró): primero ver si
+                # el teléfono sigue ahí. Un cable flojo a media corrida
+                # larga tumba comandos sueltos; abortar de frente ahorra
+                # tokens en vez de reintentar contra un teléfono ido.
+                try:
+                    adb_driver.ensure_device()
+                except RuntimeError as exc:
+                    print(f"se perdió el teléfono a media tarea ({exc}); "
+                          f"revisa el cable y vuelve a correr")
+                    logger.step(index, False, 0,
+                                detail="sin teléfono")
+                    success = False
+                    break
+                # Sigue ahí: pausa para que un hipo transitorio del cable
+                # o del demonio se despeje antes del reintento.
+                time.sleep(2)
             if attempt == 1:
                 print(f"paso {index}: reintentando una vez")
+        if (not step_ok and ok and meta_mode
+                and replans < MAX_REPLANS):
+            # El toque entró pero no cambió nada (punto muerto): no se
+            # re-toca lo mismo, se pide OTRA acción al modelo con captura
+            # fresca y el historial del punto muerto ya anotado.
+            replans += 1
+            print(f"paso {index}: sin cambio; replan {replans}/"
+                  f"{MAX_REPLANS} con el modelo")
+            try:
+                model_shot = adb_driver.screenshot_png()
+            except RuntimeError:
+                model_shot = None
+            if model_shot is None:
+                print("sin captura para replanear; tarea fallida")
+                success = False
+            else:
+                try:
+                    dump = adb_driver.uia_dump()
+                except RuntimeError:
+                    dump = None
+                ui_elements = (adb_driver.labeled_clickables(dump, 30)
+                               if dump else [])
+                try:
+                    action, in_tok, out_tok = meta_client.plan_step(
+                        task, lang, model_shot, width, height,
+                        step=index, cap=META_STEPS_CAP, history=hist,
+                        ui_elements=ui_elements)
+                except meta_client.MetaError as exc:
+                    print(f"Meta falló en el replan ({exc}); tarea fallida")
+                    success = False
+                else:
+                    if action[0] == "done":
+                        print("el modelo declara la tarea cumplida")
+                        break
+                    step_ok, ok, frac = do_attempt(
+                        action, in_tok, out_tok, " (replan)")
         index += 1
         if not step_ok and frac == 0.0:
             stuck += 1
@@ -212,6 +321,7 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
                                     "manual": manual})
     print(f"resultado: {'ÉXITO' if success else 'FALLO'} "
           f"(auto={auto} manual={manual} {record['seconds']}s)")
+    adb_driver.restore_awake(prev_timeout)
     return success
 
 
@@ -220,4 +330,5 @@ if __name__ == "__main__":
     parser.add_argument("task")
     parser.add_argument("--lang", default="es")
     args = parser.parse_args()
+    print(f"harness rev {adb_driver.REV}")
     run_task(args.task, args.lang)

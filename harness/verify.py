@@ -17,6 +17,30 @@ def _chunk(kind, body):
     return head + struct.pack(">I", binascii.crc32(kind + body) & 0xFFFFFFFF)
 
 
+def _pixel_reader(data):
+    """Devuelve (ancho, alto, get(x, y) -> bytes RGB) leyendo solo lo
+    necesario. Cuando el PNG trae filtro 0 en todas las filas (caso de
+    `screencap`), los píxeles se cortan directo del flujo sin decodificar
+    los ~8 MB; si no, se decodifica completo (lento, raro)."""
+    width, height, color_type, compressed = _read_chunks(data)
+    channels = 3 if color_type == 2 else 4
+    raw = zlib.decompress(compressed)
+    stride = width * channels
+    row_len = stride + 1
+    if (len(raw) == height * row_len
+            and all(raw[y * row_len] == 0 for y in range(height))):
+        def get_fast(x, y):
+            o = y * row_len + 1 + x * channels
+            return raw[o:o + 3]
+        return width, height, get_fast
+    w, h, pixels = decode_png(data)
+
+    def get_full(x, y):
+        o = (y * w + x) * 3
+        return pixels[o:o + 3]
+    return w, h, get_full
+
+
 def shrink_png(data, factor=0.5):
     """Reduce una captura para el modelo y devuelve
     (png_chico, ancho, alto, escala). La escala convierte coordenadas
@@ -24,8 +48,9 @@ def shrink_png(data, factor=0.5):
 
     A factor 0.5, la imagen pesa ~1/4 y los tokens de entrada caen en
     proporción similar. Sin dependencias (el PNG se re-emite a mano).
+    Lee por píxeles en vez de decodificar todo (mismo muestreo que antes).
     """
-    width, height, pixels = decode_png(data)
+    width, height, get = _pixel_reader(data)
     small_w = max(1, int(width * factor))
     small_h = max(1, int(height * factor))
     small = bytearray(small_w * small_h * 3)
@@ -33,9 +58,8 @@ def shrink_png(data, factor=0.5):
         src_y = min(height - 1, int(y / factor))
         for x in range(small_w):
             src_x = min(width - 1, int(x / factor))
-            src = (src_y * width + src_x) * 3
             dst = (y * small_w + x) * 3
-            small[dst:dst + 3] = pixels[src:src + 3]
+            small[dst:dst + 3] = get(src_x, src_y)
     stride = small_w * 3
     raw = bytearray()
     for y in range(small_h):
@@ -131,9 +155,13 @@ def decode_png(data):
 
 
 def change_fraction(before_png, after_png, max_pixels=20000):
-    """Fracción de píxeles distintos entre dos PNG (0.0 a 1.0)."""
-    w1, h1, p1 = decode_png(before_png)
-    w2, h2, p2 = decode_png(after_png)
+    """Fracción de píxeles distintos entre dos PNG (0.0 a 1.0).
+
+    Mismo muestreo que siempre (el umbral calibrado no cambia): solo se
+    evita decodificar los megapíxeles que nadie mira.
+    """
+    w1, h1, get1 = _pixel_reader(before_png)
+    w2, h2, get2 = _pixel_reader(after_png)
     w, h = min(w1, w2), min(h1, h2)
     if w <= 0 or h <= 0:
         return 0.0
@@ -142,9 +170,7 @@ def change_fraction(before_png, after_png, max_pixels=20000):
     for y in range(0, h, step):
         for x in range(0, w, step):
             total += 1
-            o1 = (y * w1 + x) * 3
-            o2 = (y * w2 + x) * 3
-            if p1[o1:o1 + 3] != p2[o2:o2 + 3]:
+            if get1(x, y) != get2(x, y):
                 different += 1
     return different / total if total else 0.0
 
