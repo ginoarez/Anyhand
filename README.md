@@ -12,6 +12,24 @@ Status: working calibration milestone. The end-to-end loop runs both in-app
 (AccessibilityDriver) and from a PC (adb harness), driving our own unlabeled
 test app in Spanish, English, and Portuguese.
 
+## Meta models used
+
+- **Muse Spark 1.3** (Meta Model API, Responses API, `computer` tool) — the
+  planning and acting core of the agent. It receives the user's command and
+  a phone screenshot, and returns the next UI action (tap, swipe, type...).
+  See `harness/meta_client.py`.
+
+To run with the real Meta planner:
+
+1. Claim your Meta Model API hackathon credits and create a key at
+   https://dev.meta.ai
+2. Copy `.env.example` to `.env` and paste your key into `.env`
+3. Set the planner to `meta` (in-app Settings, or `META_PLANNER=meta`)
+4. Run a task — every step now calls Muse Spark 1.3
+
+Without a key, the app falls back to a free local stub planner so the UI
+and the accessibility driver can be reviewed without API access.
+
 ## Try the app
 
 1. Install and open the app.
@@ -21,6 +39,20 @@ test app in Spanish, English, and Portuguese.
 4. Run a voice or typed command such as "ve a la pantalla siguiente".
 
 No extra tooling is required to try it.
+
+First-time setup without touching the phone (for hands-free users, a
+helper runs this once over USB; afterwards everything is voice):
+
+```powershell
+adb shell settings put secure enabled_accessibility_services com.anyhand.app/.agent.AccessibilityDriverService
+adb shell settings put secure accessibility_enabled 1
+adb shell pm grant com.anyhand.app android.permission.RECORD_AUDIO
+```
+
+Android does not allow apps to enable their own accessibility service,
+so the very first activation always needs a helper or adb. The app's
+first-launch card links straight to the system settings for the manual
+path.
 
 ## Reproduce the evaluation
 
@@ -81,6 +113,8 @@ are never committed).
 ## Third-party tools and models
 
 - Meta Model API: Muse Spark 1.3 (`computer.computer` tool, Responses API) for planning; stub planner for free calibration.
+- Lucide icons (ISC License) - https://lucide.dev
+- Atkinson Hyperlegible font (SIL Open Font License 1.1), Braille Institute of America
 - AndroidX libraries (Compose, Activity, Core, Lifecycle).
 - Muse Code (development assistant).
 - Python standard library only for the harness; no third-party packages.
