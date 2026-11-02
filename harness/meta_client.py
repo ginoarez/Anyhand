@@ -21,6 +21,7 @@ dev.meta.ai cambia el esquema, este módulo es el único que se toca.
 import base64
 import json
 import os
+import time
 import urllib.request
 
 import verify
@@ -39,6 +40,33 @@ if not 0.1 <= SHRINK <= 1.0:
 
 class MetaError(RuntimeError):
     pass
+
+
+def _save_debug(small_png, task, step, raw_action, scaled_action,
+                small_w, small_h, upscale):
+    """Evidencia local por paso (results/debug/, nunca se sube): la
+    captura exacta que vio el modelo + la acción cruda que devolvió +
+    la acción ya escalada que tocó el driver. Comparar las tres cosas
+    dice si falla el mapeo de coordenadas o el modelo eligió mal."""
+    try:
+        folder = os.path.join("results", "debug")
+        os.makedirs(folder, exist_ok=True)
+        stamp = time.strftime("%H%M%S")
+        base = os.path.join(folder, f"{stamp}-paso{step}")
+        with open(base + ".png", "wb") as fh:
+            fh.write(small_png)
+        data = {
+            "task": task,
+            "step": step,
+            "captura_modelo": [small_w, small_h],
+            "upscale": upscale,
+            "accion_modelo": list(raw_action),
+            "accion_driver": list(scaled_action),
+        }
+        with open(base + ".json", "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=1)
+    except OSError:
+        pass  # la depuración nunca tumba una tarea
 
 
 def api_key():
@@ -169,7 +197,10 @@ def plan_step(task, lang, png_bytes, width, height, step=0, cap=10,
     except Exception as exc:
         raise MetaError(f"la API no respondió: {exc}") from exc
     action, in_tok, out_tok = parse_response(payload)
-    return scale_action(action, upscale), in_tok, out_tok
+    scaled = scale_action(action, upscale)
+    _save_debug(small_png, task, step, action, scaled,
+                small_w, small_h, upscale)
+    return scaled, in_tok, out_tok
 
 
 def scale_action(action, upscale):

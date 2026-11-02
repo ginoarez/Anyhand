@@ -18,3 +18,6 @@ local.properties
 harness/.env
 # Capturas de pantalla: evidencia local, no pública.
 results/screenshots/
+# Depuración de coordenadas Meta: captura que vio el modelo, acción
+# cruda y acción escalada por paso. Solo local.
+results/debug/
