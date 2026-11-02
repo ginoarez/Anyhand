@@ -72,11 +72,25 @@ python harness/eval.py
 ```
 
 Runs append to `results/runs.jsonl` (one JSON object per line: task,
-language, success, per-step latency, auto/manual verdicts).
-Formal evaluation (Oct 28, 1080x2400 device): 8/8. Real-app Meta runs
-(Instagram task, with `tok=` per step) are in the same log as evidence
-of live Meta Model API usage; `results/summary.md` shows the latest
-evaluation table.
+language, success, planner, model, per-step latency, auto/manual
+verdicts). Results are reported per planner, never mixed:
+
+- **Stub planner (local calibration):** formal set (Oct 28, 1080x2400
+  device) 8/8. This calibrates the driver and verifier only; it says
+  nothing about model intelligence.
+- **Meta planner (Muse Spark 1.3, real runs):** 0/11 passed so far in
+  the logged real runs (test-app tasks and a real-app Instagram task,
+  each with `tok=` per step). Reported as-is; the failure analysis
+  (coordinate/debug captures) is kept locally in `results/debug/`
+  (not committed). Regenerate the two tables any time with
+  `python harness/eval.py --resumen`.
+
+The demo video is edited and sped up: live Meta steps take ~12 s per
+step on simple tasks (the physical action itself is 120–170 ms; the
+rest is the model call). The demo footage shows the test app; real-app
+runs exist only as log evidence on the author's own account.
+
+Formal calibration set (stub planner):
 
 | task | lang | ok |
 |---|---|---|
