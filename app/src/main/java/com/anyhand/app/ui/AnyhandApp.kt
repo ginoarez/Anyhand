@@ -11,6 +11,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -22,8 +27,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -55,6 +62,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -64,6 +72,9 @@ import androidx.compose.ui.unit.dp
 import com.anyhand.app.agent.AccessibilityDriver
 import com.anyhand.app.agent.AccessibilityDriverService
 import com.anyhand.app.agent.AgentAction
+import com.anyhand.app.agent.AgentVoiceService
+import com.anyhand.app.agent.extractWakeCommand
+import com.anyhand.app.agent.extractOpenAppTarget
 import com.anyhand.app.agent.AgentRunner
 import com.anyhand.app.agent.AgentState
 import com.anyhand.app.agent.MetaPlanner
@@ -72,6 +83,7 @@ import com.anyhand.app.agent.StatusText
 import com.anyhand.app.agent.StubPlannerAdapter
 import com.anyhand.app.agent.VoicePolicy
 import com.anyhand.app.agent.VoiceStep
+import com.anyhand.app.agent.speechLocale
 import com.anyhand.app.agent.WAKE_WORD
 import com.anyhand.app.ui.theme.AnyhandTheme
 import com.anyhand.app.unlabeled.TestState
@@ -88,6 +100,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun AnyhandApp() {
     val context = LocalContext.current
+    val activity = remember { context as? androidx.activity.ComponentActivity }
     val scope = rememberCoroutineScope()
 
     var command by remember { mutableStateOf("") }
@@ -117,6 +130,8 @@ fun AnyhandApp() {
     // Un solo turno para todos los reintentos con pausa (errores, vacíos,
     // ocupado): cada evento nuevo invalida lo programado.
     var restartGen by remember { mutableStateOf(0) }
+    // Último parcial oído en la sesión: respaldo si el final viene vacío.
+    var lastPartial by remember { mutableStateOf("") }
     // Espejos de la política para la UI (la política no es estado Compose):
     // se actualizan con syncPolicy() tras cada cambio.
     // Centinela: micrófono abierto esperando SOLO la palabra. Se muestra
@@ -133,6 +148,9 @@ fun AnyhandApp() {
     // Detener deja nota visible ("Detenido") hasta la próxima orden.
     var stoppedNote by remember { mutableStateOf(false) }
     var serviceOn by remember { mutableStateOf(AccessibilityDriverService.isEnabled()) }
+    var overlayAllowed by remember {
+        mutableStateOf(Settings.canDrawOverlays(context))
+    }
     val prefs = remember {
         context.getSharedPreferences("anyhand", android.content.Context.MODE_PRIVATE)
     }
@@ -154,6 +172,9 @@ fun AnyhandApp() {
     // El centinela debe revivir solo: quien dicta la orden no tiene manos
     // para tocar el orbe y reabrir el micrófono si la escucha cae.
     var sentryDesired by remember { mutableStateOf(false) }
+    // ¿La app está en primer plano? El vigilante no pelea con el servicio
+    // de fondo cuando la app está minimizada.
+    var foreground by remember { mutableStateOf(true) }
     val systemDark = isSystemInDarkTheme()
     var dark by remember {
         mutableStateOf(prefs.getBoolean("dark", systemDark))
@@ -170,6 +191,7 @@ fun AnyhandApp() {
     LaunchedEffect(Unit) {
         while (true) {
             serviceOn = AccessibilityDriverService.isEnabled()
+            overlayAllowed = Settings.canDrawOverlays(context)
             delay(1000)
         }
     }
@@ -184,11 +206,77 @@ fun AnyhandApp() {
     val orbActive = state == AgentState.LISTENING || state == AgentState.PLANNING ||
         state == AgentState.ACTING || state == AgentState.VERIFYING
 
+    /** Pasa la escucha al servicio de fondo (escucha continua). */
+    fun startBackgroundService() {
+        try {
+            androidx.core.content.ContextCompat.startForegroundService(
+                context, Intent(context, AgentVoiceService::class.java))
+        } catch (e: Exception) {
+            android.util.Log.d("AnyhandVoice",
+                "servicio de fondo no arrancó: ${e.message}")
+        }
+    }
+
+
+    /** Abre una app por su nombre visible. Devuelve el nombre o null. */
+    fun launchAppByName(target: String): String? {
+        val wanted = com.anyhand.app.agent.normalizeSpeech(target)
+            .replace(Regex("[^a-z0-9]"), "")
+        if (wanted.isBlank()) return null
+        val pm = context.packageManager
+        val main = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val matches = pm.queryIntentActivities(main, 0).mapNotNull { info ->
+            val label = info.loadLabel(pm).toString()
+            val compact = com.anyhand.app.agent.normalizeSpeech(label)
+                .replace(Regex("[^a-z0-9]"), "")
+            val pkg = info.activityInfo.packageName
+            if (compact.isNotEmpty() &&
+                (compact.contains(wanted) || wanted.contains(compact))
+            ) label to pkg else null
+        }
+        val (label, pkg) = matches.firstOrNull() ?: return null
+        val intent = pm.getLaunchIntentForPackage(pkg) ?: return null
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            context.startActivity(intent)
+            startBackgroundService()
+            label
+        } catch (_: Exception) { null }
+    }
+
     fun startRun(task: String) {
         if (task.isBlank()) return
         val metrics = context.resources.displayMetrics
         val lang = language
         job?.cancel()
+        // "Abre WhatsApp" no pasa por el planificador: el teléfono
+        // busca la app por su nombre visible y la abre directo.
+        val openTarget = extractOpenAppTarget(task)
+        if (openTarget != null) {
+            val launched = launchAppByName(openTarget)
+            if (launched != null) {
+                state = AgentState.DONE
+                lastResult = t(lang, "Abriendo $launched",
+                    "Opening $launched", "Abrindo $launched")
+                return
+            }
+            lastResult = t(lang,
+                "No encontré la app pedida entre tus apps.",
+                "I could not find that app among your apps.",
+                "Não encontrei esse app entre seus apps.")
+            // Sin coincidencia sigue el flujo normal (Meta puede
+            // buscarla en pantalla); no se corta la orden aquí.
+        }
+        // Con escucha continua, Anyhand se quita de en medio: la orden se
+        // ejecuta sobre la app que quede al frente (si no, el agente se
+        // toca a sí mismo y "no pasa nada en la pantalla"). Al minimizar,
+        // el servicio de fondo toma la escucha con su orbe chico.
+        if (continuous || plannerMode == "meta" || TestState.isExitTask(task)) {
+            startBackgroundService()
+            activity?.moveTaskToBack(true)
+        }
         job = scope.launch {
             // Sin clave no hay Meta: el runner usa el stub gratis.
             // La clave vive solo en este teléfono, nunca en el repo.
@@ -238,6 +326,20 @@ fun AnyhandApp() {
                     "Execution error$cause. Check the service and try again.",
                     "Erro de execução$cause. Verifique o serviço e tente de novo.")
             }
+            // Escucha continua de verdad: al terminar la orden (salga
+            // bien o mal) la escucha vuelve sola. En primer plano como
+            // centinela con la palabra; minimizada la toma el servicio.
+            if (continuous && !stoppedNote &&
+                kotlinx.coroutines.currentCoroutineContext()
+                    [kotlinx.coroutines.Job] == job) {
+                if (foreground) {
+                    // La cadena existente reabre la escucha manos
+                    // libres al volver (sin llamar hacia adelante).
+                    chainVoice = true
+                } else {
+                    startBackgroundService()
+                }
+            }
         }
     }
 
@@ -245,17 +347,50 @@ fun AnyhandApp() {
     // el orbe escucha, el texto parcial aparece en vivo y al terminar
     // arranca la orden solo. UNA sola instancia: destruir/crear en cada
     // arranque causaba ERROR_CLIENT por carrera.
-    fun newRecognizer(): SpeechRecognizer? =
-        if (SpeechRecognizer.isRecognitionAvailable(context)) {
-            SpeechRecognizer.createSpeechRecognizer(context)
-        } else null
+    // Si el servicio de reconocimiento falla seguido, se cambia al
+    // reconocedor en el dispositivo (Android 12+): otro backend, sin red.
+    var useOnDevice by remember { mutableStateOf(false) }
+    var onDeviceBanned by remember { mutableStateOf(false) }
+    var giveUpCount by remember { mutableStateOf(0) }
+    // CODE_12 (idioma no disponible): reintento con la etiqueta completa
+    // del teléfono. null = usar speechLocale(language, teléfono).
+    var speechTagOverride by remember { mutableStateOf<String?>(null) }
+    // La marca "ignora el próximo error" (eco de nuestro cancel) caduca:
+    // sin caducidad se quedaba pegada y se tragaba el error real
+    // siguiente, dejando el micrófono muerto sin reintento.
+    var suppressErrorUntil by remember { mutableStateOf(0L) }
+    fun newRecognizer(): SpeechRecognizer? {
+        val onDevice = useOnDevice &&
+            android.os.Build.VERSION.SDK_INT >= 31 &&
+            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+        return when {
+            onDevice -> SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+            SpeechRecognizer.isRecognitionAvailable(context) ->
+                SpeechRecognizer.createSpeechRecognizer(context)
+            else -> null
+        }
+    }
     var recognizer by remember { mutableStateOf(newRecognizer()) }
     DisposableEffect(Unit) {
         onDispose { recognizer?.destroy() }
     }
 
+    /** Recupera la escucha del servicio de fondo al volver. */
+    fun stopBackgroundService() {
+        try {
+            context.stopService(Intent(context, AgentVoiceService::class.java))
+        } catch (_: Exception) {
+        }
+    }
+
     /** Reconocedor nuevo: tras rachas de error el viejo queda sordo. */
     fun resetRecognizer() {
+        giveUpCount++
+        if (giveUpCount >= 2 && !useOnDevice && !onDeviceBanned) {
+            useOnDevice = true
+            android.util.Log.d("AnyhandVoice",
+                "cambiando a reconocedor en el dispositivo")
+        }
         try {
             recognizer?.destroy()
         } catch (_: Exception) {
@@ -275,6 +410,15 @@ fun AnyhandApp() {
             "Não entendi. Toque o orbe e tente de novo.")
     }
 
+    /** Rendirse tras la racha: en centinela el silencio NO es error (el
+     * vigilante reabre sin pintar el orbe rojo); dictando sí se muestra. */
+    fun showGiveUp(suffix: String) {
+        if (!sentryDesired) {
+            state = AgentState.FAILED
+            lastResult = hearError() + suffix
+        }
+    }
+
     fun startListeningInternal() {
         if (recognizer == null) {
             voiceActive = false
@@ -289,15 +433,21 @@ fun AnyhandApp() {
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
             )
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE,
+                speechTagOverride ?: speechLocale(
+                    language,
+                    java.util.Locale.getDefault().toLanguageTag()))
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             // Tiempos de silencio más altos: evita que corte la frase a
             // media voz fuerte o pausada. No existe control de ganancia.
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2000)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200)
+            // Sin EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: con 2000 ms
+            // las órdenes cortas ("cierra la aplicación") se descartaban
+            // como "muy cortas" y no se oía nada (NO_MATCH en bucle).
         }
+        lastPartial = ""
         recognizer?.apply {
             setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
@@ -313,7 +463,11 @@ fun AnyhandApp() {
                         "mic abierto (lang=$language sentry=$sentry)")
                 }
 
-                override fun onBeginningOfSpeech() = Unit
+                override fun onBeginningOfSpeech() {
+                    // Prueba de vida en el registro: el micrófono SÍ oye
+                    // voz (si nunca aparece, el problema es el backend).
+                    android.util.Log.d("AnyhandVoice", "voz detectada")
+                }
                 override fun onRmsChanged(rmsdB: Float) = Unit
                 override fun onBufferReceived(buffer: ByteArray?) = Unit
                 override fun onEndOfSpeech() = Unit
@@ -322,11 +476,72 @@ fun AnyhandApp() {
                 override fun onError(error: Int) {
                     // La sesión terminó (con error o cancelación).
                     sessionAlive = false
-                    // Eco de nuestro propio cancel(): se consume, el
-                    // reintento con pausa ya va en camino.
-                    if (suppressNextError) {
+                    // Eco de nuestro propio cancel(): se consume SOLO
+                    // si llega enseguida. Si la marca caducó, este error
+                    // es real y debe reintentar: antes la marca se
+                    // quedaba pegada, se tragaba un silencio normal y el
+                    // micrófono moría sin que nadie lo reabriera.
+                    if (suppressNextError &&
+                        android.os.SystemClock.uptimeMillis() <= suppressErrorUntil
+                    ) {
                         suppressNextError = false
                         android.util.Log.d("AnyhandVoice", "eco de cancel propio")
+                        return
+                    }
+                    suppressNextError = false
+                    // CODE_12 = idioma no disponible en ESTE backend.
+                    // Escalera de respaldo: 1) etiqueta completa del
+                    // teléfono, 2) reconocedor en el dispositivo,
+                    // 3) volver al de siempre ya prohibido el anterior.
+                    // Antes solo se atendía en el dispositivo y el de
+                    // siempre reintentaba sordo para siempre.
+                    if (error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) {
+                        val deviceTag =
+                            java.util.Locale.getDefault().toLanguageTag()
+                        val currentTag = speechTagOverride ?: speechLocale(
+                            language, deviceTag)
+                        when {
+                            useOnDevice -> {
+                                useOnDevice = false
+                                onDeviceBanned = true
+                                android.util.Log.d("AnyhandVoice",
+                                    "CODE_12 en dispositivo: prohibido, " +
+                                        "vuelvo al de siempre")
+                                resetRecognizer()
+                            }
+                            currentTag != deviceTag -> {
+                                speechTagOverride = deviceTag
+                                android.util.Log.d("AnyhandVoice",
+                                    "CODE_12: reintento con idioma del " +
+                                        "teléfono ($deviceTag)")
+                            }
+                            !onDeviceBanned &&
+                                android.os.Build.VERSION.SDK_INT >= 31 &&
+                                SpeechRecognizer.isOnDeviceRecognitionAvailable(context) -> {
+                                useOnDevice = true
+                                android.util.Log.d("AnyhandVoice",
+                                    "CODE_12: cambio a reconocedor en el dispositivo")
+                                resetRecognizer()
+                            }
+                            else -> {
+                                voiceActive = false
+                                policy.stop()
+                                syncPolicy()
+                                showGiveUp(" (CODE_12)")
+                                android.util.Log.d("AnyhandVoice",
+                                    "CODE_12 sin respaldo disponible")
+                                return
+                            }
+                        }
+                        if (voiceActive) {
+                            restartGen += 1
+                            val langGen = restartGen
+                            mainHandler.postDelayed({
+                                if (langGen == restartGen && voiceActive) {
+                                    startListeningInternal()
+                                }
+                            }, 300)
+                        }
                         return
                     }
                     val name = when (error) {
@@ -362,8 +577,7 @@ fun AnyhandApp() {
                             voiceActive = false
                             policy.stop()
                             syncPolicy()
-                            state = AgentState.FAILED
-                            lastResult = hearError() + " (BUSY)"
+                            showGiveUp(" (BUSY)")
                             // Sesión trabada: reconocedor nuevo y el
                             // vigilante reabre el centinela solo.
                             resetRecognizer()
@@ -385,8 +599,7 @@ fun AnyhandApp() {
                         VoiceStep.GiveUp -> {
                             voiceActive = false
                             syncPolicy()
-                            state = AgentState.FAILED
-                            lastResult = hearError() + " ($name)"
+                            showGiveUp(" ($name)")
                             // Reconocedor nuevo y el vigilante reabre el
                             // centinela solo: nadie toca el orbe.
                             resetRecognizer()
@@ -398,10 +611,33 @@ fun AnyhandApp() {
                 override fun onResults(results: Bundle?) {
                     // La sesión terminó con resultado.
                     sessionAlive = false
+                    // Si el resultado final viene vacío pero hubo parcial,
+                    // vale el parcial: el finalizador a veces lo tira.
                     val heard = results
                         ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         ?.firstOrNull()
+                        ?: lastPartial.ifBlank { null }
+                    if (heard != null) giveUpCount = 0
                     android.util.Log.d("AnyhandVoice", "oído=«$heard»")
+                    // Apagado de una palabra ("apágate"): manda sobre
+                    // todo. Seis palabras como "apagar la luz" no.
+                    if (com.anyhand.app.agent.isStopCommand(heard)) {
+                        job?.cancel()
+                        voiceActive = false
+                        sentryDesired = false
+                        policy.stop()
+                        syncPolicy()
+                        sessionAlive = false
+                        suppressNextError = true
+                        suppressErrorUntil = android.os.SystemClock.uptimeMillis() + 2000
+                        restartGen += 1
+                        recognizer?.cancel()
+                        stopBackgroundService()
+                        stoppedNote = true
+                        state = AgentState.IDLE
+                        lastResult = t(language, "Apagado.", "Off.", "Desligado.")
+                        return
+                    }
                     // La política decide; la UI solo obedece.
                     when (val step = policy.onHeard(heard)) {
                         VoiceStep.KeepListening, VoiceStep.WakeArmed -> {
@@ -418,45 +654,66 @@ fun AnyhandApp() {
                             }
                         }
                         is VoiceStep.Accept -> {
-                            stoppedNote = false
-                            voiceActive = continuous
-                            syncPolicy()
-                            command = step.order
-                            startRun(step.order)
+                            val newWake = extractWakeCommand(step.order)
+                            if (newWake != null) {
+                                // Cambiar la palabra por voz: se guarda
+                                // y la política la usa desde ya.
+                                wakeWord = newWake
+                                prefs.edit()
+                                    .putString("wake_word", newWake).apply()
+                                policy.wakeWord = newWake
+                                heardLive = heard ?: ""
+                                lastResult = t(language,
+                                    "Palabra de activación: «$newWake»",
+                                    "Wake word: “$newWake”",
+                                    "Palavra de ativação: “$newWake”")
+                                voiceActive = sentryDesired || continuous
+                                if (voiceActive) {
+                                    policy.openVoice(
+                                        requireWake = true, quiet = true)
+                                    syncPolicy()
+                                    startListeningInternal()
+                                } else {
+                                    syncPolicy()
+                                }
+                            } else {
+                                stoppedNote = false
+                                voiceActive = continuous
+                                syncPolicy()
+                                command = step.order
+                                startRun(step.order)
+                            }
                         }
                         VoiceStep.GiveUp -> {
                             // Solo llega aquí con resultado vacío y la
                             // racha agotada (onHeard(null) → onFailure).
                             voiceActive = false
                             syncPolicy()
-                            state = AgentState.FAILED
-                            lastResult = hearError() + " (VACIO)"
+                            showGiveUp(" (VACIO)")
                             resetRecognizer()
                         }
                     }
                 }
 
                 override fun onPartialResults(partial: Bundle?) {
-                    // El parcial solo alimenta la línea "Oí:": la tarjeta de
-                    // última orden muestra únicamente órdenes aceptadas.
+                    // El parcial alimenta la línea "Oí:" y queda de respaldo
+                    // si el resultado final viene vacío.
                     partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()?.let { heardLive = it }
+                        ?.firstOrNull()?.let {
+                            heardLive = it
+                            lastPartial = it
+                        }
                 }
             })
             try {
                 if (sessionAlive) {
-                    // Sesión anterior aún viva: se cancela y se reabre
-                    // con pausa en vez de chocar (evita el bucle BUSY).
-                    // El eco del cancel se consume en onError.
-                    suppressNextError = true
-                    cancel()
-                    restartGen += 1
-                    val clashGen = restartGen
-                    mainHandler.postDelayed({
-                        if (clashGen == restartGen && voiceActive) {
-                            startListeningInternal()
-                        }
-                    }, 500)
+                    // Sesión anterior aún viva = YA está escuchando:
+                    // no hay nada que reabrir. Antes se cancelaba y se
+                    // reabría, y el eco de ese cancel dejaba la marca de
+                    // "ignora el próximo error" pegada: se tragaba el
+                    // silencio real siguiente y el micrófono moría.
+                    android.util.Log.d("AnyhandVoice",
+                        "ya escuchando: no se toca la sesión")
                 } else {
                     // Se marca desde el arranque: cierra la ventana entre
                     // startListening y onReadyForSpeech donde otro arranque
@@ -513,6 +770,7 @@ fun AnyhandApp() {
             sentryDesired = false
             sessionAlive = false
             suppressNextError = true
+            suppressErrorUntil = android.os.SystemClock.uptimeMillis() + 2000
             recognizer?.stopListening()
             recognizer?.cancel()
             state = AgentState.IDLE
@@ -543,6 +801,9 @@ fun AnyhandApp() {
         if (chainVoice) {
             chainVoice = false
             launchVoiceInput(auto = true)
+            // Continua: la siguiente orden va directa, sin repetir
+            // la palabra tras cada instrucción.
+            if (continuous) policy.resumeContinuous()
         }
     }
     // Centinela al abrir: si el permiso ya está dado, el micrófono se abre
@@ -569,7 +830,8 @@ fun AnyhandApp() {
     LaunchedEffect(Unit) {
         while (true) {
             delay(2000)
-            if (sentryDesired && !voiceActive && job?.isActive != true &&
+            if (foreground && sentryDesired && !voiceActive &&
+                job?.isActive != true &&
                 state != AgentState.AWAITING_CONFIRMATION
             ) {
                 android.util.Log.d("AnyhandVoice", "vigilante reabre centinela")
@@ -580,31 +842,139 @@ fun AnyhandApp() {
             }
         }
     }
+    // Ciclo de vida: al minimizar con escucha continua, el servicio de
+    // fondo toma el micrófono (este se suelta para no pelear); al volver,
+    // la app lo recupera y re-engancha el centinela si no había nada.
+    DisposableEffect(activity) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    foreground = true
+                    stopBackgroundService()
+                    if (!voiceActive && job?.isActive != true &&
+                        state != AgentState.ACTING &&
+                        state != AgentState.VERIFYING &&
+                        state != AgentState.AWAITING_CONFIRMATION &&
+                        androidx.core.content.ContextCompat.checkSelfPermission(
+                            context, android.Manifest.permission.RECORD_AUDIO,
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        sentryDesired = true
+                        policy.openVoice(requireWake = true, quiet = true)
+                        voiceActive = true
+                        syncPolicy()
+                        startListeningInternal()
+                    }
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    foreground = false
+                    if (continuous && voiceActive) {
+                        startBackgroundService()
+                        voiceActive = false
+                        policy.stop()
+                        syncPolicy()
+                        sessionAlive = false
+                        suppressNextError = true
+                        suppressErrorUntil = android.os.SystemClock.uptimeMillis() + 2000
+                        recognizer?.cancel()
+                    }
+                }
+                else -> Unit
+            }
+        }
+        activity?.lifecycle?.addObserver(observer)
+        onDispose { activity?.lifecycle?.removeObserver(observer) }
+    }
 
     AnyhandTheme(darkTheme = dark) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             bottomBar = {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_lucide_lock),
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Text(
-                        t(language, "Las capturas se envían a Meta para decidir cada paso.",
-                            "Screenshots are sent to Meta to decide each step.",
-                            "Capturas são enviadas à Meta para decidir cada passo."),
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                Column {
+                    // Detener hasta el borde (full width, sin esquinas):
+                    // ícono alineado con latido sutil mientras trabaja.
+                    if (!showSettings) {
+                        val working = state == AgentState.PLANNING ||
+                            state == AgentState.ACTING ||
+                            state == AgentState.VERIFYING
+                        val stopTransition =
+                            rememberInfiniteTransition(label = "detener")
+                        val stopScale by stopTransition.animateFloat(
+                            initialValue = 1f,
+                            targetValue = 1.3f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(700),
+                                repeatMode = RepeatMode.Reverse,
+                            ),
+                            label = "stopScale",
+                        )
+                        Button(
+                            onClick = {
+                                // Detener para de todo: tarea y micrófono.
+                                job?.cancel()
+                                voiceActive = false
+                                policy.stop()
+                                syncPolicy()
+                                sentryDesired = false
+                                sessionAlive = false
+                                suppressNextError = true
+                                suppressErrorUntil = android.os.SystemClock.uptimeMillis() + 2000
+                                restartGen += 1
+                                recognizer?.cancel()
+                                stopBackgroundService()
+                                stoppedNote = true
+                                state = AgentState.IDLE
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(0.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (dark) Color(0xFFF5F7FA)
+                                else Color(0xFF14213D),
+                                contentColor = if (dark) Color(0xFF14213D)
+                                else Color(0xFFF5F7FA),
+                            ),
+                        ) {
+                            Icon(
+                                painter = painterResource(
+                                    R.drawable.ic_lucide_square),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .then(
+                                        if (working && animationsEnabled)
+                                            Modifier.scale(stopScale)
+                                        else Modifier),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                t(language, "Detener", "Stop", "Parar"),
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_lucide_lock),
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            t(language, "Las capturas se envían a Meta para decidir cada paso.",
+                                "Screenshots are sent to Meta to decide each step.",
+                                "Capturas são enviadas à Meta para decidir cada passo."),
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
                 }
             },
         ) { innerPadding ->
@@ -651,6 +1021,15 @@ fun AnyhandApp() {
                         onOpenAccessibility = {
                             context.startActivity(
                                 Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        },
+                        overlayAllowed = overlayAllowed,
+                        onOpenOverlay = {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    android.net.Uri.parse(
+                                        "package:${context.packageName}"),
+                                ))
                         },
                         onBack = { showSettings = false },
                     )
@@ -701,8 +1080,11 @@ fun AnyhandApp() {
                                     .height(48.dp),
                                 shape = RoundedCornerShape(14.dp),
                             ) {
-                                Text(t(language, "Activar acceso",
-                                    "Enable access", "Ativar acesso"))
+                                Text(
+                                    t(language, "Activar acceso",
+                                        "Enable access", "Ativar acesso"),
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
                             }
                         }
                     }
@@ -853,39 +1235,6 @@ fun AnyhandApp() {
                     }
                 }
 
-                Button(
-                    onClick = {
-                        // Detener para de todo: tarea y micrófono. El
-                        // vigilante no resucita tras un paro deliberado.
-                        job?.cancel()
-                        voiceActive = false
-                        policy.stop()
-                        syncPolicy()
-                        sentryDesired = false
-                        sessionAlive = false
-                        suppressNextError = true
-                        restartGen += 1
-                        recognizer?.cancel()
-                        stoppedNote = true
-                        state = AgentState.IDLE
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (dark) Color(0xFFF5F7FA)
-                        else Color(0xFF14213D),
-                        contentColor = if (dark) Color(0xFF14213D)
-                        else Color(0xFFF5F7FA),
-                    ),
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_lucide_square),
-                        contentDescription = null,
-                    )
-                    Text(t(language, "Detener", "Stop", "Parar"))
-                }
                 if (state == AgentState.FAILED && lastResult.isNotEmpty()) {
                     Text(
                         lastResult,
@@ -946,6 +1295,8 @@ private fun SettingsScreen(
     metaKey: String,
     onMetaKey: (String) -> Unit,
     onOpenAccessibility: () -> Unit,
+    overlayAllowed: Boolean,
+    onOpenOverlay: () -> Unit,
     onBack: () -> Unit,
 ) {
     val wakeShown = wakeWord.ifBlank { WAKE_WORD }
@@ -985,7 +1336,7 @@ private fun SettingsScreen(
                         ) {
                             Text(
                                 label,
-                                style = MaterialTheme.typography.labelLarge,
+                                style = MaterialTheme.typography.labelMedium,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                             )
                         }
@@ -1036,7 +1387,7 @@ private fun SettingsScreen(
                 ) {
                     Text(
                         t(language, "Gratis", "Free", "Grátis"),
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.labelMedium,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(vertical = 12.dp),
                     )
@@ -1052,7 +1403,7 @@ private fun SettingsScreen(
                 ) {
                     Text(
                         "Meta",
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.labelMedium,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(vertical = 12.dp),
                     )
@@ -1102,8 +1453,32 @@ private fun SettingsScreen(
                     .height(44.dp),
                 shape = RoundedCornerShape(12.dp),
             ) {
-                Text(t(language, "Abrir ajustes de accesibilidad",
-                    "Open accessibility settings", "Abrir configurações de acessibilidade"))
+                Text(
+                    t(language, "Abrir ajustes de accesibilidad",
+                        "Open accessibility settings", "Abrir configurações de acessibilidade"),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            SettingsRow(
+                icon = R.drawable.ic_lucide_eye,
+                title = t(language, "Orbe flotante",
+                    "Floating orb", "Orbe flutuante"),
+                subtitle = if (overlayAllowed) t(language,
+                    "Permitido: sale al despertar en segundo plano.",
+                    "Allowed: appears on wake in background.",
+                    "Permitido: aparece ao acordar em segundo plano.")
+                else t(language, "Sin permiso: la voz igual funciona.",
+                    "Not allowed: voice still works.",
+                    "Sem permissão: a voz funciona igual."),
+            ) {
+                if (!overlayAllowed) {
+                    TextButton(onClick = onOpenOverlay) {
+                        Text(
+                            t(language, "Permitir", "Allow", "Permitir"),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
             }
         }
 
