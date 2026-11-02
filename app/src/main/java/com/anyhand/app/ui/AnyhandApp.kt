@@ -273,6 +273,34 @@ fun AnyhandApp() {
         // ejecuta sobre la app que quede al frente (si no, el agente se
         // toca a sí mismo y "no pasa nada en la pantalla"). Al minimizar,
         // el servicio de fondo toma la escucha con su orbe chico.
+        // Vía rápida: direcciones (desliza/arriba/swipe up...) se
+        // ejecutan al instante, sin planificador ni capturas.
+        val quickSwipe = com.anyhand.app.agent.basicSwipeAction(
+            task, metrics.widthPixels, metrics.heightPixels)
+        if (quickSwipe is com.anyhand.app.agent.AgentAction.Swipe) {
+            val leaving = continuous || plannerMode == "meta"
+            if (leaving) {
+                startBackgroundService()
+                activity?.moveTaskToBack(true)
+            }
+            job = scope.launch {
+                if (leaving) kotlinx.coroutines.delay(350)
+                val r = AccessibilityDriver().swipe(
+                    quickSwipe.x1, quickSwipe.y1,
+                    quickSwipe.x2, quickSwipe.y2, quickSwipe.durationMs)
+                state = if (r.success) AgentState.DONE else AgentState.FAILED
+                lastResult = if (r.success) t(lang, "Hecho", "Done", "Feito")
+                    else t(lang, "No se pudo deslizar.",
+                        "Could not swipe.", "Não consegui deslizar.")
+                if (continuous && !stoppedNote &&
+                    kotlinx.coroutines.currentCoroutineContext()
+                        [kotlinx.coroutines.Job] == job) {
+                    if (foreground) chainVoice = true
+                    else startBackgroundService()
+                }
+            }
+            return
+        }
         if (continuous || plannerMode == "meta" || TestState.isExitTask(task)) {
             startBackgroundService()
             activity?.moveTaskToBack(true)
@@ -613,9 +641,9 @@ fun AnyhandApp() {
                     sessionAlive = false
                     // Si el resultado final viene vacío pero hubo parcial,
                     // vale el parcial: el finalizador a veces lo tira.
-                    val heard = results
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
+                    val heard = com.anyhand.app.agent.bestHeard(
+                        results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION),
+                        policy.wakeWord)
                         ?: lastPartial.ifBlank { null }
                     if (heard != null) giveUpCount = 0
                     android.util.Log.d("AnyhandVoice", "oído=«$heard»")

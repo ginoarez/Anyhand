@@ -171,9 +171,10 @@ class AgentVoiceService : Service() {
             override fun onPartialResults(partial: Bundle?) {
                 // Lo que vas diciendo aparece junto al orbe, en vivo:
                 // así sabes que sí te está escuchando.
-                val text = partial
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
+                val text = bestHeard(
+                    partial?.getStringArrayList(
+                        SpeechRecognizer.RESULTS_RECOGNITION),
+                    policy.wakeWord)
                 if (!text.isNullOrBlank()) {
                     lastPartial = text
                     // Hablando: la boca se mueve mientras dictas.
@@ -204,9 +205,10 @@ class AgentVoiceService : Service() {
                 // Final vacío con parcial oído: vale el parcial (en
                 // fondo el finalizador tira el texto con frecuencia;
                 // por eso salía «null» aunque sí hubiera voz).
-                val heard = results
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
+                val heard = bestHeard(
+                    results?.getStringArrayList(
+                        SpeechRecognizer.RESULTS_RECOGNITION),
+                    policy.wakeWord)
                     ?: lastPartial.ifBlank { null }
                 Log.d("AnyhandVoice", "fondo oyó=«$heard»")
                 // Apagado de una palabra: manda sobre todo lo demás.
@@ -242,6 +244,7 @@ class AgentVoiceService : Service() {
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             // En varios fabricantes (Oplus incluido) la sesión de un
             // servicio sin paquete llamante vuelve vacía siempre.
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
@@ -304,6 +307,28 @@ class AgentVoiceService : Service() {
                 setCaption("Te escucho…")
                 startSentry()
             }, 800)
+            return
+        }
+        // Vía rápida: direcciones al instante, sin planificador.
+        val quickSwipe = basicSwipeAction(
+            order, resources.displayMetrics.widthPixels,
+            resources.displayMetrics.heightPixels)
+        if (quickSwipe is AgentAction.Swipe) {
+            setMood(Mood.TOCANDO, "Deslizando…")
+            scope.launch {
+                val r = AccessibilityDriver().swipe(
+                    quickSwipe.x1, quickSwipe.y1,
+                    quickSwipe.x2, quickSwipe.y2, quickSwipe.durationMs)
+                Log.d("AnyhandVoice",
+                    "fondo desliza rápido ok=${r.success}")
+                running = false
+                handler.postDelayed({
+                    policy.resumeContinuous()
+                    showOrb(active = true)
+                    setCaption("Te escucho…")
+                    startSentry()
+                }, 300)
+            }
             return
         }
         val prefs = getSharedPreferences("anyhand", MODE_PRIVATE)
