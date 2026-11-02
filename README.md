@@ -8,16 +8,22 @@ commands on the phone screen, checks every step against before/after
 screenshots, asks for confirmation before irreversible actions, and logs
 latency and results for every run.
 
-Status: working calibration milestone. The end-to-end loop runs both in-app
-(AccessibilityDriver) and from a PC (adb harness), driving our own unlabeled
-test app in Spanish, English, and Portuguese.
+Status: working hands-free agent. Say the wake word (configurable, no
+touch needed) and dictate any order; the agent plans with Meta, acts over
+whatever app is in front, verifies each step, and keeps listening in the
+background behind a small floating avatar. The end-to-end loop also runs
+from a PC (adb harness), driving our own unlabeled test app in Spanish,
+English, and Portuguese.
 
 ## Meta models used
 
 - **Muse Spark 1.3** (Meta Model API, Responses API, `computer` tool) — the
-  planning and acting core of the agent. It receives the user's command and
-  a phone screenshot, and returns the next UI action (tap, swipe, type...).
-  See `harness/meta_client.py`.
+  planning and acting core of the agent. It receives the user's command,
+  a phone screenshot, the labeled on-screen elements and the step history,
+  and returns the next UI action (tap, swipe, type...). Used in-app
+  (`app/.../agent/MetaPlanner.kt`) and from the PC harness
+  (`harness/meta_client.py`). Real Meta runs are logged with per-step
+  token counts (`tok=`) in `results/runs.jsonl`.
 
 To run with the real Meta planner:
 
@@ -67,7 +73,10 @@ python harness/eval.py
 
 Runs append to `results/runs.jsonl` (one JSON object per line: task,
 language, success, per-step latency, auto/manual verdicts).
-Formal evaluation (Oct 28, 1080x2400 device): 8/8.
+Formal evaluation (Oct 28, 1080x2400 device): 8/8. Real-app Meta runs
+(Instagram task, with `tok=` per step) are in the same log as evidence
+of live Meta Model API usage; `results/summary.md` shows the latest
+evaluation table.
 
 | task | lang | ok |
 |---|---|---|
@@ -93,11 +102,13 @@ Full table in `results/summary.md`.
   screenshots, node dumps, Back/Home global actions.
 - Unlabeled test app (canvas-drawn, zero accessibility nodes, painted
   pixel-only labels).
-- Main UI: voice or text commands, ES/EN/PT selector, confirmation dialog,
+- Main UI: voice or text commands, wake word (Settings or by voice),
+  continuous background listening with a floating avatar that shows the
+  agent state and what it hears, ES/EN/PT selector, confirmation dialog,
   run log.
 - PC harness (`harness/`, stdlib only): adb driver, PNG verifier,
   agent loop, task evaluator.
-- Unit tests (`AgentLogicTest`, 6/6 passing).
+- Unit tests (`AgentLogicTest`, run from Android Studio).
 
 Planning has two modes. Default is a keyword stub for free driver
 calibration (`tok: 0` in every record). With `META_PLANNER=meta` and a
@@ -113,8 +124,10 @@ are never committed).
 ## Third-party tools and models
 
 - Meta Model API: Muse Spark 1.3 (`computer.computer` tool, Responses API) for planning; stub planner for free calibration.
-- Lucide icons (ISC License) - https://lucide.dev
-- Atkinson Hyperlegible font (SIL Open Font License 1.1), Braille Institute of America
+- Lucide icons (ISC License) - https://lucide.dev — vector drawables in
+  `app/src/main/res/drawable/ic_lucide_*.xml`, license in `docs/licenses/`
+- Atkinson Hyperlegible font (SIL Open Font License 1.1), Braille Institute
+  of America — fonts in `app/src/main/res/font/`, license in `docs/licenses/`
 - AndroidX libraries (Compose, Activity, Core, Lifecycle).
 - Muse Code (development assistant).
 - Python standard library only for the harness; no third-party packages.
@@ -124,4 +137,5 @@ are never committed).
 - `app/` — Android app (Kotlin + Compose) and AccessibilityDriver.
 - `harness/` — Python adb driver, agent loop, verifier, evaluator.
 - `results/` — run records (`runs.jsonl`) and generated tables.
-- `docs/` — README assets and demo script (in progress).
+- `docs/` — third-party licenses (`licenses/`) and build notes
+  (`agents-updates-2026-10-26.md`).
