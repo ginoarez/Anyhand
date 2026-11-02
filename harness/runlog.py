@@ -10,8 +10,11 @@ import time
 
 
 class RunLogger:
-    def __init__(self, path="results/runs.jsonl"):
+    def __init__(self, path="results/runs.jsonl",
+                 planner="stub", model="stub-local"):
         self.path = path
+        self.planner = planner
+        self.model = model
         self.steps = []
         self.started = None
 
@@ -33,6 +36,8 @@ class RunLogger:
             "task": task,
             "lang": lang,
             "success": bool(success),
+            "planner": self.planner,
+            "model": self.model,
             "seconds": round(time.time() - self.started, 2),
             "steps": self.steps,
         }

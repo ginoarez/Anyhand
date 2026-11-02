@@ -123,13 +123,15 @@ def run_task(task, lang="es", setup=(), extra=None, confirm=None):
     for action in setup:
         ok, detail = execute(action)
         print(f"setup: {detail} ok={ok}")
-    logger = RunLogger()
+    meta_mode = os.environ.get("META_PLANNER", "stub").lower() == "meta"
+    logger = RunLogger(
+        planner="meta" if meta_mode else "stub",
+        model=meta_client.MODEL if meta_mode else "stub-local")
     logger.task_start()
     success = True
     stuck = 0
     hist = []
     replans = 0
-    meta_mode = os.environ.get("META_PLANNER", "stub").lower() == "meta"
     planned = plan(task, width, height)
     if requires_confirmation(task):
         # Una sola aprobación por tarea: ya no se pregunta en cada paso.

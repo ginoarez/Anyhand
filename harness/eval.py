@@ -107,43 +107,91 @@ def label_count():
     return dump.count("<node")
 
 
+def _planner_sections(rows):
+    """rows: (tarea, idioma, grupo, éxito, nodos, planificador)."""
+    sections = {}
+    for row in rows:
+        sections.setdefault(row[5], []).append(row)
+    return sections
+
+
 def write_summary(rows, path="results/summary.md"):
-    groups = {}
-    for task, lang, group, success, labels in rows:
-        groups.setdefault(group, []).append(success)
+    """Dos tablas separadas por planificador: la calibración stub y
+    los resultados reales de Meta no se mezclan ni se promedian."""
     lines = ["# Resumen de evaluación",
              "",
              f"Fecha: {datetime.date.today().isoformat()}",
-             "",
-             "| grupo | éxito | total |",
-             "|---|---|---|"]
-    total_ok = total_n = 0
-    for group, results in groups.items():
-        ok = sum(1 for s in results if s)
-        lines.append(f"| {group} | {ok} | {len(results)} |")
-        total_ok += ok
-        total_n += len(results)
-    lines += ["",
-              f"Total: {total_ok}/{total_n}",
-              "",
-              "## Por tarea",
-              "",
-              "| tarea | idioma | grupo | éxito | nodos |",
-              "|---|---|---|---|---|"]
-    for task, lang, group, success, labels in rows:
-        mark = "x" if success else " "
-        lines.append(f"| {task} | {lang} | {group} | [{mark}] | "
-                     f"{labels if labels is not None else '-'} |")
+             ""]
+    for planner, prows in _planner_sections(rows).items():
+        title = ("Planificador Meta (Meta Model API)"
+                 if planner == "meta" else
+                 "Planificador stub (calibración local)")
+        lines += [f"## {title}", ""]
+        groups = {}
+        for _, _, group, success, _, _ in prows:
+            groups.setdefault(group, []).append(success)
+        lines += ["| grupo | éxito | total |", "|---|---|---|"]
+        total_ok = total_n = 0
+        for group, results in groups.items():
+            ok = sum(1 for s in results if s)
+            lines.append(f"| {group} | {ok} | {len(results)} |")
+            total_ok += ok
+            total_n += len(results)
+        lines += ["",
+                  f"Total {planner}: {total_ok}/{total_n}",
+                  "",
+                  "| tarea | idioma | grupo | planificador | éxito | nodos |",
+                  "|---|---|---|---|---|---|"]
+        for task, lang, group, success, labels, pl in prows:
+            mark = "x" if success else " "
+            lines.append(f"| {task} | {lang} | {group} | {pl} | [{mark}] | "
+                         f"{labels if labels is not None else '-'} |")
+        lines.append("")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
     print(f"tabla escrita en {path}")
+
+
+def summarize_history(log_path="results/runs.jsonl",
+                      path="results/summary.md"):
+    """Resumen histórico desde runs.jsonl, separado por planificador.
+
+    Los registros viejos no traen campo planner: se infiere por los
+    tokens (tok>0 = Meta). Los nuevos lo traen explícito.
+    """
+    import json as _json
+    rows = []
+    if os.path.exists(log_path):
+        with open(log_path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                r = _json.loads(line)
+                planner = r.get("planner")
+                if not planner:
+                    toks = sum(s.get("tok", 0) for s in r.get("steps", []))
+                    planner = "meta" if toks > 0 else "stub"
+                rows.append((r.get("task", ""), r.get("lang", ""),
+                             r.get("group", "app"), bool(r.get("success")),
+                             r.get("labels"), planner))
+    write_summary(rows, path)
+    return rows
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--solo", default=None,
                         help="corre solo un grupo (p. ej. --solo app-real)")
+    parser.add_argument("--resumen", action="store_true",
+                        help="solo regenera results/summary.md desde "
+                             "runs.jsonl, separado por planificador")
     args = parser.parse_args()
+    if args.resumen:
+        summarize_history()
+        return
+    planner = ("meta" if os.environ.get("META_PLANNER", "stub").lower()
+               == "meta" else "stub")
     entries = [e for e in TASKS
                if args.solo is None or e["group"] == args.solo]
     if args.solo is not None and not entries:
@@ -173,7 +221,7 @@ def main():
         if not opened:
             print(f"tarea omitida (no abrió {package}/{activity})")
             rows.append((entry["task"], entry["lang"], entry["group"],
-                         False, None))
+                         False, None, planner))
             continue
         if not adb_driver.wait_focused(package):
             print("aviso: la app no tomó el foco a tiempo; "
@@ -189,9 +237,9 @@ def main():
             confirm=ask_success,
         )
         rows.append((entry["task"], entry["lang"], entry["group"],
-                     success, labels))
+                     success, labels, planner))
     print("\n=== resumen ===")
-    ok = sum(1 for _, _, _, s, _ in rows if s)
+    ok = sum(1 for _, _, _, s, _, _ in rows if s)
     print(f"éxito: {ok}/{len(rows)}")
     write_summary(rows)
     try:
