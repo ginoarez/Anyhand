@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.BasicTextField
@@ -58,6 +59,15 @@ object TestState {
         }
     }
 
+    /** Tareas de salida (cerrar/volver al inicio): no se verifican por
+     * pantalla porque la app ya no está visible; valen si el ciclo
+     * ejecutó y verificó el paso (Back con cambio visible). */
+    fun isExitTask(task: String): Boolean {
+        val lower = task.lowercase()
+        return containsAny(lower, "cierra", "cerrar", "close", "feche",
+            "fechar", "salir", "sair", "exit")
+    }
+
     private fun containsAny(text: String, vararg words: String): Boolean =
         words.any { text.contains(it) }
 }
@@ -67,7 +77,7 @@ class UnlabeledTestActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         TestState.reset()
         setContent {
-            AnyhandTheme {
+            AnyhandTheme(darkTheme = isSystemInDarkTheme()) {
                 UnlabeledScreen()
             }
         }

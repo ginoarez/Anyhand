@@ -2,6 +2,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Sin INTERNET el planificador Meta muere con "permission denied". -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Escucha en segundo plano con escucha continua (servicio + orbe). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Abrir apps por nombre ("abre WhatsApp"): sin esto Android 11+
+         filtra la lista de apps del launcher y no se encuentra nada. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -28,6 +46,11 @@
             android:name=".unlabeled.UnlabeledTestActivity"
             android:exported="true"
             android:label="Anyhand Test" />
+
+        <service
+            android:name=".agent.AgentVoiceService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <service
             android:name=".agent.AccessibilityDriverService"

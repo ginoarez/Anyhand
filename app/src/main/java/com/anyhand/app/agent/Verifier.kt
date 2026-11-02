@@ -77,6 +77,9 @@ object StubPlanner {
                 listOf(AgentAction.Tap(cx, screenH * 0.82f))
             containsAny(lower, "atrás", "atras", "back", "voltar") ->
                 listOf(AgentAction.KeyPress("Back"))
+            containsAny(lower, "cierra", "cerrar", "close", "feche",
+                "fechar", "salir", "sair", "exit") ->
+                listOf(AgentAction.KeyPress("Back"))
             containsAny(lower, "ok", "terminar", "finish", "finalizar",
                 "concluir", "fin", "done", "fim") ->
                 listOf(AgentAction.Tap(cx, screenH * 0.82f))

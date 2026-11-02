@@ -80,20 +80,33 @@ class AccessibilityDriverService : AccessibilityService() {
 
     fun inputTextBlocking(text: String): ActionResult {
         val root = rootInActiveWindow ?: return ActionResult(false, "no active window")
-        val target = findEditable(root) ?: return ActionResult(false, "no editable node")
+        // Primero el campo CON foco; si no hay, el primer editable.
+        val target = findEditable(root, requireFocus = true)
+            ?: findEditable(root, requireFocus = false)
+            ?: return ActionResult(false, "no editable node")
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
-        val ok = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        var ok = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (!ok) {
+            // Sin foco el teclado no abre y SET_TEXT no agarra:
+            // enfocar + tocar el campo (abre el teclado) y reintentar.
+            target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            ok = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        }
         target.recycle()
         return if (ok) ActionResult(true) else ActionResult(false, "ACTION_SET_TEXT failed")
     }
 
-    private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isEditable) return node
+    private fun findEditable(
+        node: AccessibilityNodeInfo,
+        requireFocus: Boolean,
+    ): AccessibilityNodeInfo? {
+        if (node.isEditable && (!requireFocus || node.isFocused)) return node
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findEditable(child)
+            val found = findEditable(child, requireFocus)
             if (found != null) {
                 if (found != child) child.recycle()
                 return found
@@ -156,9 +169,14 @@ class AccessibilityDriverService : AccessibilityService() {
     private fun dumpNode(node: AccessibilityNodeInfo, depth: Int, out: StringBuilder) {
         if (depth > 12) return
         repeat(depth) { out.append("  ") }
+        val bounds = android.graphics.Rect()
+        node.getBoundsInScreen(bounds)
         out.append(node.className ?: "?")
             .append(" text=").append(node.text ?: "-")
             .append(" desc=").append(node.contentDescription ?: "-")
+            .append(" centro=[").append(bounds.centerX())
+            .append(",").append(bounds.centerY()).append("]")
+            .append(" tocable=").append(if (node.isClickable) "si" else "no")
             .append('\n')
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue

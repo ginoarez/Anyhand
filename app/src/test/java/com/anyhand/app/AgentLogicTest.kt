@@ -10,10 +10,15 @@ import com.anyhand.app.agent.AgentState
 import com.anyhand.app.agent.KeyMapper
 import com.anyhand.app.agent.containsWakeWord
 import com.anyhand.app.agent.stripWakeWord
+import com.anyhand.app.agent.extractWakeCommand
 import com.anyhand.app.agent.StatusText
 import com.anyhand.app.agent.StubPlanner
 import com.anyhand.app.agent.VoicePolicy
 import com.anyhand.app.agent.VoiceStep
+import com.anyhand.app.agent.speechLocale
+import com.anyhand.app.agent.extractOpenAppTarget
+import com.anyhand.app.agent.buildPlannerPrompt
+import com.anyhand.app.agent.isStopCommand
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -150,6 +155,15 @@ class AgentLogicTest {
     }
 
     @Test
+    fun wakeCommand_extractsNewWord() {
+        assertEquals("ana", extractWakeCommand("cambia la palabra a ana"))
+        assertEquals("computadora",
+            extractWakeCommand("Dios cambia la palabra a computadora"))
+        assertEquals(null, extractWakeCommand("cierra la aplicación"))
+        assertEquals(null, extractWakeCommand("abre ajustes"))
+    }
+
+    @Test
     fun voicePolicy_customWakeWordArmsAndAccepts() {
         val policy = VoicePolicy("computadora")
         policy.openVoice(requireWake = true, quiet = true)
@@ -165,10 +179,95 @@ class AgentLogicTest {
         val policy = VoicePolicy()
         policy.openVoice(requireWake = true, quiet = true)
         assertEquals(VoiceStep.WakeArmed, policy.onHeard("Anyhand"))
-        repeat(8) {
+        repeat(30) {
             assertEquals(VoiceStep.KeepListening, policy.onFailure())
         }
         assertEquals(VoiceStep.GiveUp, policy.onFailure())
+    }
+
+    @Test
+    fun voicePolicy_sentryToleratesQuietFailures() {
+        val policy = VoicePolicy()
+        policy.openVoice(requireWake = true, quiet = true)
+        repeat(12) {
+            assertEquals(VoiceStep.KeepListening, policy.onFailure())
+        }
+        assertEquals(VoiceStep.GiveUp, policy.onFailure())
+        // Habla sin la palabra: se oyó algo, la racha se reinicia.
+        policy.openVoice(requireWake = true, quiet = true)
+        repeat(3) { policy.onFailure() }
+        assertEquals(VoiceStep.KeepListening, policy.onHeard("hola"))
+        assertEquals(0, policy.streak)
+    }
+
+    @Test
+    fun speechLocale_alwaysFullTagNeverBareCode() {
+        // El teléfono ya habla el idioma: se respeta su región.
+        assertEquals("es-ES", speechLocale("es", "es-ES"))
+        assertEquals("en-GB", speechLocale("en", "en-GB"))
+        // El teléfono habla otro idioma: región principal del pedido.
+        // Nunca el código a secas: eso provocaba CODE_12 (sordo).
+        assertEquals("es-MX", speechLocale("es", "en-US"))
+        assertEquals("en-US", speechLocale("en", "es-MX"))
+        assertEquals("pt-BR", speechLocale("pt", "es-MX"))
+    }
+
+    @Test
+    fun openAppTarget_extractsNameTrilingual() {
+        assertEquals("whatsapp", extractOpenAppTarget("abre WhatsApp"))
+        assertEquals("whatsapp", extractOpenAppTarget("abre la aplicación WhatsApp"))
+        assertEquals("whatsapp", extractOpenAppTarget("open WhatsApp"))
+        assertEquals("whatsapp", extractOpenAppTarget("abra o WhatsApp"))
+        assertEquals(null, extractOpenAppTarget("cierra la aplicación"))
+        assertEquals(null, extractOpenAppTarget("envia un mensaje"))
+    }
+
+    @Test
+    fun voicePolicy_continuousAcceptsNextOrderWithoutWakeWord() {
+        val policy = VoicePolicy("dios")
+        policy.openVoice(requireWake = true, quiet = true)
+        assertEquals(VoiceStep.WakeArmed, policy.onHeard("dios"))
+        assertEquals(
+            VoiceStep.Accept("abre whatsapp"),
+            policy.onHeard("abre whatsapp"))
+        // Tras ejecutar, la continua sigue despierta: la siguiente
+        // orden entra directa, sin repetir la palabra.
+        policy.resumeContinuous()
+        assertEquals(
+            VoiceStep.Accept("vuelve atrás"),
+            policy.onHeard("vuelve atrás"))
+        assertEquals(
+            VoiceStep.Accept("escribe hola"),
+            policy.onHeard("escribe hola"))
+    }
+
+    @Test
+    fun stopCommand_onlySingleWord() {
+        assertTrue(isStopCommand("apágate"))
+        assertTrue(isStopCommand("¡Detente!"))
+        assertTrue(isStopCommand("stop"))
+        assertTrue(isStopCommand("pare"))
+        // Frases con esas palabras NO apagan: son órdenes normales.
+        assertFalse(isStopCommand("manda un mensaje de apagar la luz"))
+        assertFalse(isStopCommand("apaga la luz"))
+        assertFalse(isStopCommand("dios apágate"))
+        assertFalse(isStopCommand(""))
+        assertFalse(isStopCommand(null))
+    }
+
+    @Test
+    fun plannerPrompt_thinksAboutCurrentScreen() {
+        val prompt = buildPlannerPrompt(
+            task = "quiero ver los contactos de whatsapp",
+            lang = "es", step = 1, shotW = 540, shotH = 1200,
+            nodes = "ImageButton desc=Volver centro=[60,140] tocable=si",
+            history = "paso 1: Tap(x=270.0, y=600.0) ok=true",
+        )
+        assertTrue(prompt.contains("Volver"))
+        assertTrue(prompt.contains("centro=[60,140]"))
+        assertTrue(prompt.contains("flecha de arriba a la izquierda"))
+        assertTrue(prompt.contains("Ya se hizo"))
+        assertTrue(prompt.contains("540x1200"))
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.anyhand.app.agent
 
 import android.os.SystemClock
+import kotlinx.coroutines.delay
 
 /**
  * Ciclo del agente: planifica, pide confirmación si toca, actúa y verifica.
@@ -14,13 +15,35 @@ class AgentRunner(
     private val driver: Driver,
     private val needsConfirmation: suspend (AgentAction) -> Boolean = { false },
     private val onState: (AgentState) -> Unit = {},
+    private val planner: Planner = StubPlannerAdapter(),
+    private val stepCap: Int = 10,
 ) {
     suspend fun run(task: String, language: String, screenW: Int, screenH: Int): AgentRun {
         val steps = mutableListOf<AgentStep>()
-        onState(AgentState.PLANNING)
-        val plan = StubPlanner.plan(task, screenW, screenH)
-
-        for ((index, action) in plan.withIndex()) {
+        var index = 0
+        while (true) {
+            onState(AgentState.PLANNING)
+            if (index >= stepCap) {
+                onState(AgentState.FAILED)
+                return AgentRun(task, language, steps, success = false)
+            }
+            // La captura y los elementos con etiqueta alimentan al
+            // planificador (el stub los ignora): Meta piensa sobre lo
+            // que hay en pantalla, no a ciegas.
+            val shot = driver.screenshot()
+            val nodes = driver.dumpNodes()
+            val history = steps.joinToString("\n") {
+                "paso ${it.index + 1}: ${it.action} ok=${it.success}"
+            }
+            val next = planner.next(
+                task, language, shot, screenW, screenH, index,
+                nodes, history)
+            if (next.done) {
+                onState(AgentState.DONE)
+                return AgentRun(task, language, steps, success = true)
+            }
+            val action = next.action ?: break
+            val tokens = next.inTokens + next.outTokens
             if (ConfirmationGate.requiresConfirmation(task, action)) {
                 onState(AgentState.AWAITING_CONFIRMATION)
                 val approved = needsConfirmation(action)
@@ -36,12 +59,24 @@ class AgentRunner(
             val latency = SystemClock.elapsedRealtime() - start
 
             onState(AgentState.VERIFYING)
-            val after = driver.screenshot()
-            val verified = if (before != null && after != null) {
+            // Espera a que la pantalla reaccione (animaciones, teclado,
+            // transiciones): comparar en frío marcaba como fallo
+            // acciones que sí funcionaron ("algo salió mal" falso).
+            delay(500)
+            var after = driver.screenshot()
+            var verified = if (before != null && after != null) {
                 Verifier.changedEnough(before, after)
             } else {
                 // Sin capturas (servicio no activo) se acepta el resultado del driver.
                 result.success
+            }
+            if (!verified && result.success && before != null) {
+                // Segunda oportunidad: cambios lentos (teclado que
+                // sube, app que abre) tardan más de medio segundo.
+                delay(800)
+                after = driver.screenshot()
+                verified = after != null &&
+                    Verifier.changedEnough(before, after)
             }
             val ok = result.success && verified
             steps.add(
@@ -49,6 +84,7 @@ class AgentRunner(
                     index = index,
                     action = action,
                     latencyMs = latency,
+                    tokensUsed = tokens,
                     success = ok,
                     detail = result.detail,
                 ),
@@ -57,6 +93,7 @@ class AgentRunner(
                 onState(AgentState.FAILED)
                 return AgentRun(task, language, steps, success = false)
             }
+            index++
         }
         onState(AgentState.DONE)
         return AgentRun(task, language, steps, success = true)

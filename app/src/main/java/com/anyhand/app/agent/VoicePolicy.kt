@@ -101,6 +101,20 @@ fun extractWakeCommand(heard: String): String? {
 }
 
 /**
+ * Mejor candidato del reconocedor: el primero que trae la palabra de
+ * activación bien oída; si ninguno, el primero no vacío. El motor a
+ * veces acierta la palabra en el segundo candidato y usar solo el
+ * primero hacía perder órdenes bien dichas.
+ */
+fun bestHeard(candidates: List<String>?, wakeWord: String): String? {
+    if (candidates.isNullOrEmpty()) return null
+    val clean = candidates.filter { it.isNotBlank() }
+    if (clean.isEmpty()) return null
+    return clean.firstOrNull { containsWakeWord(it, wakeWord) }
+        ?: clean.first()
+}
+
+/**
  * Comando de apagado total de UNA sola palabra ("apágate", "detente",
  * "stop"...). Solo dispara si TODA la frase es esa palabra: "manda un
  * mensaje de apagar la luz" son seis palabras y NO apaga nada; es una
@@ -180,6 +194,7 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
 
     /** Toque al orbe: dictar directo, sin palabra. */
     fun openTap() {
+        continuous = false
         requireWake = false
         quiet = false
         awaitingOrder = false
@@ -188,11 +203,16 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
 
     /** Apertura por voz (cadena, centinela, Detener): configura exigencia. */
     fun openVoice(requireWake: Boolean, quiet: Boolean) {
+        continuous = false
         this.requireWake = requireWake
         this.quiet = quiet
         awaitingOrder = false
         streak = 0
     }
+
+    /** ¿Modo continuo? Tras aceptar una orden sigue esperando otra. */
+    var continuous = false
+        private set
 
     /**
      * Escucha continua tras ejecutar una orden: sigue despierto
@@ -200,6 +220,7 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
      * otra vez. Solo Detener (o apagar la continua) sale de aquí.
      */
     fun resumeContinuous() {
+        continuous = true
         requireWake = true
         quiet = false
         awaitingOrder = true
@@ -208,6 +229,7 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
 
     /** Cierre total: apaga exigencia, espera y racha. */
     fun stop() {
+        continuous = false
         requireWake = false
         quiet = false
         awaitingOrder = false
@@ -243,7 +265,9 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
             streak = 0
             return VoiceStep.WakeArmed
         }
-        awaitingOrder = false
+        // En continua queda armado: la siguiente frase ya es orden,
+        // sin esperar a que el llamador lo rearme tras ejecutar.
+        awaitingOrder = continuous
         quiet = false
         return VoiceStep.Accept(order)
     }
