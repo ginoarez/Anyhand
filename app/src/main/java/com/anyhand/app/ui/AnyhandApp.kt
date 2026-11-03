@@ -108,6 +108,8 @@ fun AnyhandApp() {
     var state by remember { mutableStateOf(AgentState.IDLE) }
     var lastResult by remember { mutableStateOf("") }
     var pendingAction by remember { mutableStateOf<AgentAction?>(null) }
+    // Puerta de envío: espera tu sí (voz o toque) antes de Enviar.
+    var sendGate by remember { mutableStateOf<CompletableDeferred<Boolean>?>(null) }
     var gate by remember { mutableStateOf<CompletableDeferred<Boolean>?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
     var showSettings by remember { mutableStateOf(false) }
@@ -306,11 +308,134 @@ fun AnyhandApp() {
             activity?.moveTaskToBack(true)
         }
         job = scope.launch {
+            // Borrar el texto del cuadro ("borra lo anterior").
+            if (com.anyhand.app.agent.isClearTextTask(task)) {
+                val cDriver = AccessibilityDriver()
+                val cc = com.anyhand.app.agent.editableCenter(
+                    cDriver.dumpNodes())
+                if (cc != null) {
+                    cDriver.tap(cc.first, cc.second)
+                    kotlinx.coroutines.delay(300)
+                    val okC = cDriver.inputText("").success
+                    state = if (okC) AgentState.DONE else AgentState.FAILED
+                    lastResult = if (okC) t(lang, "Borrado", "Deleted", "Apagado")
+                        else t(lang, "No se pudo borrar.",
+                            "Could not delete.", "Não consegui apagar.")
+                    if (continuous && !stoppedNote &&
+                        kotlinx.coroutines.currentCoroutineContext()
+                            [kotlinx.coroutines.Job] == job) {
+                        if (foreground) chainVoice = true
+                        else startBackgroundService()
+                    }
+                    return@launch
+                }
+            }
+            // Enviar CON confirmación: "manda un hola..." escribe el
+            // texto (reversible) y luego pide el sí (voz o toque).
+            // Sin sí, Enviar no se toca jamás.
+            val sendText = com.anyhand.app.agent.extractSendText(task)
+            if (sendText != null ||
+                com.anyhand.app.agent.isSendOnlyTask(task)) {
+                val sDriver = AccessibilityDriver()
+                var okS = true
+                if (sendText != null) {
+                    val ec = com.anyhand.app.agent.editableCenter(
+                        sDriver.dumpNodes())
+                    if (ec != null) {
+                        sDriver.tap(ec.first, ec.second)
+                        kotlinx.coroutines.delay(600)
+                        okS = sDriver.inputText(sendText).success
+                        kotlinx.coroutines.delay(400)
+                    }
+                }
+                if (okS) {
+                    state = AgentState.AWAITING_CONFIRMATION
+                    // La app viene al frente a pedir el sí.
+                    val front = context.packageManager
+                        .getLaunchIntentForPackage(context.packageName)
+                    if (front != null) {
+                        front.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        try { context.startActivity(front) } catch (_: Exception) {}
+                    }
+                    val deferred = CompletableDeferred<Boolean>()
+                    sendGate = deferred
+                    val approved = deferred.await()
+                    sendGate = null
+                    if (approved) {
+                        // De vuelta a la app objetivo y tocar Enviar
+                        // (centro recién calculado, no el viejo).
+                        activity?.moveTaskToBack(true)
+                        kotlinx.coroutines.delay(500)
+                        val nodesS = sDriver.dumpNodes()
+                        val sendCenter = com.anyhand.app.agent
+                            .sendButtonCenter(nodesS)
+                            ?: com.anyhand.app.agent.editableCenter(nodesS)?.let { ec ->
+                                (metrics.widthPixels * 0.93f) to ec.second
+                            }
+                        if (sendCenter != null) {
+                            sDriver.tap(sendCenter.first, sendCenter.second)
+                            state = AgentState.DONE
+                            lastResult = t(lang, "Enviado", "Sent", "Enviado")
+                        } else {
+                            state = AgentState.FAILED
+                            lastResult = t(lang, "No encontré el botón de enviar.",
+                                "Send button not found.", "Botão de enviar não encontrado.")
+                        }
+                    } else {
+                        state = AgentState.IDLE
+                        lastResult = t(lang, "Envío cancelado. El texto sigue en el cuadro.",
+                            "Send cancelled. The text is still in the box.",
+                            "Envio cancelado. O texto continua na caixa.")
+                    }
+                    if (continuous && !stoppedNote &&
+                        kotlinx.coroutines.currentCoroutineContext()
+                            [kotlinx.coroutines.Job] == job) {
+                        if (foreground) chainVoice = true
+                        else startBackgroundService()
+                    }
+                    return@launch
+                }
+                // Si ni el texto agarró: sigue Meta con la pantalla.
+            }
+            // Escribir / abrir el teclado sin planificador: tocar el
+            // campo editable de esta pantalla y escribir. Si esta
+            // pantalla no tiene campo, sigue el flujo normal (Meta).
+            val writeText = com.anyhand.app.agent.extractWriteText(task)
+            if (writeText != null ||
+                com.anyhand.app.agent.isOpenKeyboardTask(task)) {
+                val wDriver = AccessibilityDriver()
+                val center = com.anyhand.app.agent.editableCenter(
+                    wDriver.dumpNodes())
+                if (center != null) {
+                    wDriver.tap(center.first, center.second)
+                    kotlinx.coroutines.delay(700)
+                    var okW = true
+                    if (writeText != null) {
+                        okW = wDriver.inputText(writeText).success
+                    }
+                    state = if (okW) AgentState.DONE else AgentState.FAILED
+                    lastResult = if (okW) t(lang, "Hecho", "Done", "Feito")
+                        else t(lang, "No se pudo escribir.",
+                            "Could not type.", "Não consegui escrever.")
+                    if (continuous && !stoppedNote &&
+                        kotlinx.coroutines.currentCoroutineContext()
+                            [kotlinx.coroutines.Job] == job) {
+                        if (foreground) chainVoice = true
+                        else startBackgroundService()
+                    }
+                    return@launch
+                }
+            }
             // Sin clave no hay Meta: el runner usa el stub gratis.
             // La clave vive solo en este teléfono, nunca en el repo.
             val planner: Planner = if (plannerMode == "meta" && metaKey.isNotBlank()) {
                 MetaPlanner(metaKey.trim())
             } else StubPlannerAdapter()
+            val sam = com.anyhand.app.agent.SamRefiner.get(context)
+            val samRefiner:
+                (suspend (android.graphics.Bitmap, com.anyhand.app.agent.AgentAction.Tap) ->
+                    Pair<Float, Float>?)? =
+                sam?.let { s -> { shot, tap -> s.refine(shot, tap.x, tap.y) } }
             val runner = AgentRunner(
                 driver = AccessibilityDriver(),
                 planner = planner,
@@ -323,6 +448,7 @@ fun AnyhandApp() {
                     gate = null
                     approved
                 },
+                tapRefiner = samRefiner,
                 onState = { state = it },
             )
             state = AgentState.LISTENING
@@ -470,7 +596,7 @@ fun AnyhandApp() {
             // Tiempos de silencio más altos: evita que corte la frase a
             // media voz fuerte o pausada. No existe control de ganancia.
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900)
             // Sin EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: con 2000 ms
             // las órdenes cortas ("cierra la aplicación") se descartaban
             // como "muy cortas" y no se oía nada (NO_MATCH en bucle).
@@ -667,6 +793,17 @@ fun AnyhandApp() {
                         return
                     }
                     // La política decide; la UI solo obedece.
+                    // Si hay una confirmación de envío esperando, tu
+                    // voz ES la respuesta: sí/no manda sobre órdenes.
+                    val gateNow = sendGate
+                    if (gateNow != null) {
+                        val answer = com.anyhand.app.agent
+                            .confirmAnswer(heard)
+                        if (answer != null) {
+                            gateNow.complete(answer)
+                        }
+                        return
+                    }
                     when (val step = policy.onHeard(heard)) {
                         VoiceStep.KeepListening, VoiceStep.WakeArmed -> {
                             if (heard != null) heardLive = heard
@@ -858,9 +995,11 @@ fun AnyhandApp() {
     LaunchedEffect(Unit) {
         while (true) {
             delay(2000)
-            if (foreground && sentryDesired && !voiceActive &&
-                job?.isActive != true &&
-                state != AgentState.AWAITING_CONFIRMATION
+            val confirmWaiting = sendGate != null && !sessionAlive
+            if (foreground &&
+                ((sentryDesired && !voiceActive && job?.isActive != true &&
+                    state != AgentState.AWAITING_CONFIRMATION) ||
+                    confirmWaiting)
             ) {
                 android.util.Log.d("AnyhandVoice", "vigilante reabre centinela")
                 policy.openVoice(requireWake = true, quiet = true)
@@ -878,6 +1017,45 @@ fun AnyhandApp() {
             when (event) {
                 androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
                     foreground = true
+                    // ¿El servicio dejó un envío esperando tu sí?
+                    val pendingAt = prefs.getLong("pending_send", 0L)
+                    if (pendingAt > 0 &&
+                        System.currentTimeMillis() - pendingAt < 300_000) {
+                        prefs.edit().remove("pending_send").apply()
+                        scope.launch {
+                            val d = CompletableDeferred<Boolean>()
+                            sendGate = d
+                            state = AgentState.AWAITING_CONFIRMATION
+                            val okSend = d.await()
+                            sendGate = null
+                            if (okSend) {
+                                val m = context.resources.displayMetrics
+                                activity?.moveTaskToBack(true)
+                                kotlinx.coroutines.delay(500)
+                                val drv = AccessibilityDriver()
+                                val nodesP = drv.dumpNodes()
+                                val sc = com.anyhand.app.agent
+                                    .sendButtonCenter(nodesP)
+                                    ?: com.anyhand.app.agent
+                                        .editableCenter(nodesP)?.let { ec ->
+                                            (m.widthPixels * 0.93f) to ec.second
+                                        }
+                                if (sc != null) {
+                                    drv.tap(sc.first, sc.second)
+                                    lastResult = t(language, "Enviado", "Sent", "Enviado")
+                                } else {
+                                    lastResult = t(language, "No encontré el botón de enviar.",
+                                        "Send button not found.", "Botão de enviar não encontrado.")
+                                }
+                                state = AgentState.DONE
+                            } else {
+                                state = AgentState.IDLE
+                                lastResult = t(language, "Envío cancelado. El texto sigue en el cuadro.",
+                                    "Send cancelled. The text is still in the box.",
+                                    "Envio cancelado. O texto continua na caixa.")
+                            }
+                        }
+                    }
                     stopBackgroundService()
                     if (!voiceActive && job?.isActive != true &&
                         state != AgentState.ACTING &&
@@ -1297,6 +1475,28 @@ fun AnyhandApp() {
                 TextButton(onClick = { gate?.complete(false) }) {
                     Text(t(language, "Cancelar", "Cancel", "Cancelar"))
                 }
+
+    if (sendGate != null) {
+        AlertDialog(
+            onDismissRequest = { sendGate?.complete(false) },
+            title = { Text(t(language, "¿Enviar el mensaje?", "Send the message?", "Enviar a mensagem?")) },
+            text = {
+                Text(t(language, "Di «sí» para enviar o «no» para cancelar, o toca un botón.",
+                    "Say “yes” to send or “no” to cancel, or tap a button.",
+                    "Diga “sim” para enviar ou “não” para cancelar, ou toque um botão."))
+            },
+            confirmButton = {
+                TextButton(onClick = { sendGate?.complete(true) }) {
+                    Text(t(language, "Sí, enviar", "Yes, send", "Sim, enviar"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { sendGate?.complete(false) }) {
+                    Text(t(language, "Cancelar", "Cancel", "Cancelar"))
+                }
+            },
+        )
+    }
             },
         )
     }

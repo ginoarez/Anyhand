@@ -115,6 +115,25 @@ fun bestHeard(candidates: List<String>?, wakeWord: String): String? {
 }
 
 /**
+ * Respuesta a una confirmación por voz: true = sí, false = no,
+ * null = no es una respuesta. Frases cortas y trilingües; la
+ * confirmación también se puede tocar en pantalla, esto es la vía
+ * manos-libres.
+ */
+fun confirmAnswer(heard: String?): Boolean? {
+    if (heard.isNullOrBlank()) return null
+    val norm = normalizeSpeech(heard)
+        .replace(Regex("[^a-z ]"), " ")
+        .replace(Regex("\\s+"), " ").trim()
+    return when (norm) {
+        "si", "sí", "yes", "sim", "confirmo", "enviar", "mandalo",
+        "vale", "ok", "dale", "claro" -> true
+        "no", "cancelar", "cancel", "nao", "espera", "detente" -> false
+        else -> null
+    }
+}
+
+/**
  * Comando de apagado total de UNA sola palabra ("apágate", "detente",
  * "stop"...). Solo dispara si TODA la frase es esa palabra: "manda un
  * mensaje de apagar la luz" son seis palabras y NO apaga nada; es una

@@ -94,6 +94,126 @@ fun basicSwipeAction(task: String, screenW: Int, screenH: Int): AgentAction? {
     }
 }
 
+/**
+ * Orden de escribir: "escribe hola", "write hello", "escreva oi".
+ * Devuelve el texto a escribir o null. Escribir en el cuadro de
+ * mensajes (WhatsApp, Instagram, la app que sea) no necesita
+ * planificador: se toca el campo editable y se escribe.
+ */
+fun extractWriteText(task: String): String? {
+    val lower = normalizeSpeech(task).trim()
+    for (verb in listOf(
+        "escribe ", "escribir ", "escribi ", "write ", "type ",
+        "escreva ", "escrever ", "digita ", "digite ",
+    )) {
+        if (lower.startsWith(verb)) {
+            val text = task.trim()
+                .substring(minOf(task.trim().length, verb.length))
+                .trim().trim('"')
+            return text.ifBlank { null }
+        }
+    }
+    return null
+}
+
+/**
+ * "Manda un hola como estas" / "send hello": devuelve el texto a
+ * escribir Y enviar, o null. "Manda" a secas no trae texto: eso es
+ * solo enviar lo ya escrito (ver isSendOnlyTask).
+ */
+fun extractSendText(task: String): String? {
+    val lower = normalizeSpeech(task).trim()
+    for (verb in listOf(
+        "manda un ", "envia un ", "manda ", "mandar ", "envia ",
+        "enviar ", "send ",
+    )) {
+        if (lower.startsWith(verb)) {
+            val text = task.trim()
+                .substring(minOf(task.trim().length, verb.length))
+                .trim().trim('"')
+            val norm = normalizeSpeech(text)
+            if (norm in setOf(
+                    "lo", "la", "eso", "esto", "it", "that", "o", "a mensagem",
+                )) return null
+            return text.ifBlank { null }
+        }
+    }
+    return null
+}
+
+/** ¿La orden es solo ENVIAR lo que ya está escrito en el cuadro? */
+fun isSendOnlyTask(task: String): Boolean {
+    val lower = normalizeSpeech(task)
+        .replace(Regex("[^a-z ]"), " ")
+        .replace(Regex("\\s+"), " ").trim()
+    return lower in setOf(
+        "mandalo", "mandarlo", "envialo", "enviarlo", "manda", "envia",
+        "enviar", "mandar", "send", "send it", "envia isso", "mande",
+    )
+}
+
+/**
+ * Centro del botón de enviar en el volcado: elemento tocable cuya
+ * etiqueta dice enviar/send (en WhatsApp/Instagram está abajo a la
+ * derecha del cuadro). Si hay varios, el de más a la derecha.
+ */
+fun sendButtonCenter(nodes: String?): Pair<Float, Float>? {
+    if (nodes.isNullOrBlank()) return null
+    val centerRegex = Regex("""centro=\[(\d+),(\d+)]""")
+    var best: Pair<Float, Float>? = null
+    for (line in nodes.lineSequence()) {
+        if ("tocable=si" !in line) continue
+        val norm = normalizeSpeech(line)
+        if ("enviar" !in norm && "send" !in norm && "envia" !in norm) {
+            continue
+        }
+        val m = centerRegex.find(line) ?: continue
+        val point = m.groupValues[1].toFloat() to m.groupValues[2].toFloat()
+        if (best == null || point.first > best.first) best = point
+    }
+    return best
+}
+
+/**
+ * "Borra lo que escribiste", "borra lo anterior", "delete that":
+ * limpiar el cuadro de texto actual. Sin planificador.
+ */
+fun isClearTextTask(task: String): Boolean {
+    val lower = normalizeSpeech(task)
+    return listOf(
+        "borra lo que escribiste", "borra lo escrito", "borra el texto",
+        "borra lo del cuadro", "borra lo anterior", "borra todo",
+        "borrar lo anterior", "delete that", "delete the text",
+        "clear the text", "clear text", "apaga o texto",
+        "apague o texto", "limpa o texto", "limpar o texto",
+    ).any { lower.contains(it) }
+}
+
+/** ¿La orden es solo abrir el teclado / tocar el cuadro de texto? */
+fun isOpenKeyboardTask(task: String): Boolean {
+    val lower = normalizeSpeech(task).trim()
+    return lower in setOf(
+        "abre el teclado", "abrir el teclado", "open keyboard",
+        "abrir o teclado", "abre o teclado",
+        "abre el cuadro de mensajes", "toca el cuadro de mensajes",
+    )
+}
+
+/**
+ * Centro del primer campo editable en el volcado de nodos (líneas
+ * con editable=si y centro=[x,y]), o null si esta pantalla no tiene.
+ */
+fun editableCenter(nodes: String?): Pair<Float, Float>? {
+    if (nodes.isNullOrBlank()) return null
+    val regex = Regex("""centro=\[(\d+),(\d+)]""")
+    for (line in nodes.lineSequence()) {
+        if ("editable=si" !in line) continue
+        val m = regex.find(line) ?: continue
+        return m.groupValues[1].toFloat() to m.groupValues[2].toFloat()
+    }
+    return null
+}
+
 /** Adaptador del StubPlanner por palabras clave (sin costo). */
 class StubPlannerAdapter : Planner {
     override suspend fun next(

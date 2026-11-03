@@ -177,6 +177,7 @@ class AccessibilityDriverService : AccessibilityService() {
             .append(" centro=[").append(bounds.centerX())
             .append(",").append(bounds.centerY()).append("]")
             .append(" tocable=").append(if (node.isClickable) "si" else "no")
+            .append(" editable=").append(if (node.isEditable) "si" else "no")
             .append('\n')
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue

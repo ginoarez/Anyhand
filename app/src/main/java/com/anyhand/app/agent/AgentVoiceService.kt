@@ -253,7 +253,7 @@ class AgentVoiceService : Service() {
                 2000)
             putExtra(
                 RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
-                1200)
+                900)
         }
         try {
             rec.startListening(intent)
@@ -331,6 +331,117 @@ class AgentVoiceService : Service() {
             }
             return
         }
+        // Borrar el texto del cuadro: "borra lo que escribiste",
+        // "borra lo anterior"... Se limpia el campo y listo.
+        if (isClearTextTask(order)) {
+            scope.launch {
+                val driver = AccessibilityDriver()
+                val center = editableCenter(driver.dumpNodes())
+                var ok = false
+                if (center != null) {
+                    setMood(Mood.TOCANDO, "Borrando…")
+                    driver.tap(center.first, center.second)
+                    kotlinx.coroutines.delay(300)
+                    ok = driver.inputText("").success
+                }
+                Log.d("AnyhandVoice", "fondo borrar texto ok=$ok")
+                if (ok) setMood(Mood.LISTO, "Borrado")
+                running = false
+                handler.postDelayed({
+                    policy.resumeContinuous()
+                    showOrb(active = true)
+                    setCaption("Te escucho…")
+                    startSentry()
+                }, 400)
+            }
+            return
+        }
+        // Enviar: "manda un hola..." (escribe y envía) o "mándalo"
+        // (envía lo escrito). El botón se busca por su etiqueta
+        // Enviar/Send; Meta ya no adivina ese toque y lo erraba.
+        val sendText = extractSendText(order)
+        if (sendText != null || isSendOnlyTask(order)) {
+            scope.launch {
+                val driver = AccessibilityDriver()
+                var ok = true
+                if (sendText != null) {
+                    val ec = editableCenter(driver.dumpNodes())
+                    if (ec != null) {
+                        setMood(Mood.TOCANDO, "Escribiendo…")
+                        driver.tap(ec.first, ec.second)
+                        kotlinx.coroutines.delay(600)
+                        ok = driver.inputText(sendText).success
+                        kotlinx.coroutines.delay(400)
+                    }
+                }
+                if (!ok) {
+                    startMetaOrder(order)
+                    return@launch
+                }
+                // Enviar es irreversible: JAMÁS se toca Enviar sin
+                // confirmación. Se escribe el texto (reversible), se
+                // deja la petición pendiente y la app al frente pide
+                // el sí (por voz o toque). Sin sí, no se envía nada.
+                getSharedPreferences("anyhand", MODE_PRIVATE).edit()
+                    .putLong("pending_send", System.currentTimeMillis())
+                    .apply()
+                Log.d("AnyhandVoice",
+                    "fondo envío pendiente de confirmación")
+                setMood(Mood.CONFIRMAR, "¿Envío el mensaje? Di sí o no")
+                bringAppToFront()
+                running = false
+                handler.postDelayed({
+                    policy.resumeContinuous()
+                    showOrb(active = true)
+                    setCaption("Te escucho…")
+                    startSentry()
+                }, 400)
+            }
+            return
+        }
+        // Escribir / abrir el teclado: se toca el campo editable de
+        // ESTA pantalla (el cuadro de mensajes en WhatsApp, Instagram
+        // o la app que sea) y se escribe. Sin planificador.
+        val writeText = extractWriteText(order)
+        if (writeText != null || isOpenKeyboardTask(order)) {
+            scope.launch {
+                val driver = AccessibilityDriver()
+                val center = editableCenter(driver.dumpNodes())
+                if (center != null) {
+                    setMood(Mood.TOCANDO, "Abriendo el teclado…")
+                    driver.tap(center.first, center.second)
+                    kotlinx.coroutines.delay(700)
+                    var ok = true
+                    if (writeText != null) {
+                        setMood(Mood.TOCANDO, "Escribiendo…")
+                        ok = driver.inputText(writeText).success
+                    }
+                    Log.d("AnyhandVoice",
+                        "fondo escribir ok=$ok centro=$center")
+                    if (!ok) {
+                        startMetaOrder(order)
+                        return@launch
+                    }
+                    setMood(Mood.LISTO, "Listo")
+                    running = false
+                    handler.postDelayed({
+                        policy.resumeContinuous()
+                        showOrb(active = true)
+                        setCaption("Te escucho…")
+                        startSentry()
+                    }, 400)
+                    return@launch
+                }
+                // Sin campo editable aquí: que decida Meta.
+                startMetaOrder(order)
+            }
+            return
+        }
+        startMetaOrder(order)
+    }
+
+    /** Orden completa con planificador (Meta o stub) y avatar. */
+    private fun startMetaOrder(order: String) {
         val prefs = getSharedPreferences("anyhand", MODE_PRIVATE)
         val mode = prefs.getString("planner", "stub") ?: "stub"
         val key = (prefs.getString("meta_key", "") ?: "").trim()
@@ -342,6 +453,13 @@ class AgentVoiceService : Service() {
             "fondo orden=«$order» planificador=$mode")
         scope.launch {
             try {
+                val sam = SamRefiner.get(this@AgentVoiceService)
+                val samRefiner:
+                    (suspend (android.graphics.Bitmap, AgentAction.Tap) ->
+                        Pair<Float, Float>?)? =
+                    sam?.let { s ->
+                        { shot, tap -> s.refine(shot, tap.x, tap.y) }
+                    }
                 val runner = AgentRunner(
                     driver = AccessibilityDriver(),
                     planner = planner,
@@ -351,6 +469,7 @@ class AgentVoiceService : Service() {
                         bringAppToFront()
                         false
                     },
+                    tapRefiner = samRefiner,
                     onState = { state ->
                         when (state) {
                             AgentState.PLANNING ->
@@ -377,9 +496,10 @@ class AgentVoiceService : Service() {
                         result.steps.joinToString {
                             "${it.action} ok=${it.success} ${it.detail}"
                         })
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.d("AnyhandVoice", "orden de fondo falló: ${e.message}")
-                setMood(Mood.ERROR, "Algo salió mal")
+                setMood(Mood.ERROR,
+                    "Algo salió mal: ${e.message?.take(40) ?: e.javaClass.simpleName}")
             } finally {
                 running = false
                 handler.postDelayed({
