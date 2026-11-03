@@ -55,29 +55,37 @@ def scaled_setup(width, height, actions):
 TASKS = [
     # Grupo sin etiquetas: app de prueba propia.
     {"task": "ve a la pantalla siguiente", "lang": "es",
-     "group": "sin-etiquetas", "app": (TEST_PACKAGE, TEST_ACTIVITY),
+     "group": "sin-etiquetas", "formal": True,
+     "app": (TEST_PACKAGE, TEST_ACTIVITY),
      "setup": []},
     {"task": "go to the next screen", "lang": "en",
-     "group": "sin-etiquetas", "app": (TEST_PACKAGE, TEST_ACTIVITY),
+     "group": "sin-etiquetas", "formal": True,
+     "app": (TEST_PACKAGE, TEST_ACTIVITY),
      "setup": []},
     {"task": "avançar para a próxima tela", "lang": "pt",
-     "group": "sin-etiquetas", "app": (TEST_PACKAGE, TEST_ACTIVITY),
+     "group": "sin-etiquetas", "formal": True,
+     "app": (TEST_PACKAGE, TEST_ACTIVITY),
      "setup": []},
     {"task": 'escribe "hola mundo"', "lang": "es",
-     "group": "sin-etiquetas", "app": (TEST_PACKAGE, TEST_ACTIVITY),
+     "group": "sin-etiquetas", "formal": True,
+     "app": (TEST_PACKAGE, TEST_ACTIVITY),
      "setup": [TAP_NEXT]},
     {"task": 'type "hello"', "lang": "en",
-     "group": "sin-etiquetas", "app": (TEST_PACKAGE, TEST_ACTIVITY),
+     "group": "sin-etiquetas", "formal": True,
+     "app": (TEST_PACKAGE, TEST_ACTIVITY),
      "setup": [TAP_NEXT]},
     {"task": "pulsa ok para terminar", "lang": "es",
-     "group": "sin-etiquetas", "app": (TEST_PACKAGE, TEST_ACTIVITY),
+     "group": "sin-etiquetas", "formal": True,
+     "app": (TEST_PACKAGE, TEST_ACTIVITY),
      "setup": [TAP_NEXT]},
     # Grupo con etiquetas: Ajustes del sistema (inofensivo, verificable).
     {"task": "vuelve atrás", "lang": "es",
-     "group": "con-etiquetas", "app": (SETTINGS_PACKAGE, SETTINGS_ACTIVITY),
+     "group": "con-etiquetas", "formal": True,
+     "app": (SETTINGS_PACKAGE, SETTINGS_ACTIVITY),
      "setup": []},
     {"task": "go back", "lang": "en",
-     "group": "con-etiquetas", "app": (SETTINGS_PACKAGE, SETTINGS_ACTIVITY),
+     "group": "con-etiquetas", "formal": True,
+     "app": (SETTINGS_PACKAGE, SETTINGS_ACTIVITY),
      "setup": []},
     # Grupo app-real: Instagram de verdad. Requiere sesión iniciada en el
     # teléfono y META_PLANNER=meta con MODEL_API_KEY. El gate pregunta una
@@ -108,7 +116,7 @@ def label_count():
 
 
 def _planner_sections(rows):
-    """rows: (tarea, idioma, grupo, éxito, nodos, planificador)."""
+    """rows: (tarea, idioma, grupo, éxito, nodos, planificador, formal)."""
     sections = {}
     for row in rows:
         sections.setdefault(row[5], []).append(row)
@@ -122,13 +130,28 @@ def write_summary(rows, path="results/summary.md"):
              "",
              f"Fecha: {datetime.date.today().isoformat()}",
              ""]
+    formal_rows = [r for r in rows if len(r) > 6 and r[6]]
+    if formal_rows:
+        fok = sum(1 for r in formal_rows if r[3])
+        lines += ["## Conjunto formal (evaluación de calibración)", "",
+                  "Solo las tareas marcadas `formal: true` en eval.py; "
+                  "el resto del registro es exploración y no se mezcla.",
+                  "",
+                  f"Total formal: {fok}/{len(formal_rows)}",
+                  "",
+                  "| tarea | idioma | grupo | planificador | éxito |",
+                  "|---|---|---|---|---|"]
+        for task, lang, group, success, _, pl, _f in formal_rows:
+            mark = "x" if success else " "
+            lines.append(f"| {task} | {lang} | {group} | {pl} | [{mark}] |")
+        lines.append("")
     for planner, prows in _planner_sections(rows).items():
         title = ("Planificador Meta (Meta Model API)"
                  if planner == "meta" else
                  "Planificador stub (calibración local)")
         lines += [f"## {title}", ""]
         groups = {}
-        for _, _, group, success, _, _ in prows:
+        for _, _, group, success, _, *_ in prows:
             groups.setdefault(group, []).append(success)
         lines += ["| grupo | éxito | total |", "|---|---|---|"]
         total_ok = total_n = 0
@@ -142,7 +165,7 @@ def write_summary(rows, path="results/summary.md"):
                   "",
                   "| tarea | idioma | grupo | planificador | éxito | nodos |",
                   "|---|---|---|---|---|---|"]
-        for task, lang, group, success, labels, pl in prows:
+        for task, lang, group, success, labels, pl, *_ in prows:
             mark = "x" if success else " "
             lines.append(f"| {task} | {lang} | {group} | {pl} | [{mark}] | "
                          f"{labels if labels is not None else '-'} |")
@@ -174,7 +197,8 @@ def summarize_history(log_path="results/runs.jsonl",
                     planner = "meta" if toks > 0 else "stub"
                 rows.append((r.get("task", ""), r.get("lang", ""),
                              r.get("group", "app"), bool(r.get("success")),
-                             r.get("labels"), planner))
+                             r.get("labels"), planner,
+                             bool(r.get("formal"))))
     write_summary(rows, path)
     return rows
 
@@ -221,7 +245,7 @@ def main():
         if not opened:
             print(f"tarea omitida (no abrió {package}/{activity})")
             rows.append((entry["task"], entry["lang"], entry["group"],
-                         False, None, planner))
+                         False, None, planner, bool(entry.get("formal"))))
             continue
         if not adb_driver.wait_focused(package):
             print("aviso: la app no tomó el foco a tiempo; "
@@ -233,13 +257,14 @@ def main():
         success = agent_loop.run_task(
             entry["task"], entry["lang"],
             setup=scaled_setup(width, height, entry["setup"]),
-            extra={"group": entry["group"], "labels": labels},
+            extra={"group": entry["group"], "labels": labels,
+                   "formal": bool(entry.get("formal"))},
             confirm=ask_success,
         )
         rows.append((entry["task"], entry["lang"], entry["group"],
-                     success, labels, planner))
+                     success, labels, planner, bool(entry.get("formal"))))
     print("\n=== resumen ===")
-    ok = sum(1 for _, _, _, s, _, _ in rows if s)
+    ok = sum(1 for _, _, _, s, _, _, _ in rows if s)
     print(f"éxito: {ok}/{len(rows)}")
     write_summary(rows)
     try:
