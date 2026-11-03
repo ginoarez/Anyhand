@@ -1,5 +1,6 @@
 package com.anyhand.app.agent
 
+import android.graphics.Bitmap
 import android.os.SystemClock
 import kotlinx.coroutines.delay
 
@@ -17,10 +18,18 @@ class AgentRunner(
     private val onState: (AgentState) -> Unit = {},
     private val planner: Planner = StubPlannerAdapter(),
     private val stepCap: Int = 10,
+    /**
+     * Refinador opcional de toques (SAM): recibe la captura y el tap
+     * propuesto y puede devolver el punto corregido. Null = sin
+     * refinar (el tap va tal cual).
+     */
+    private val tapRefiner: (suspend (Bitmap, AgentAction.Tap) ->
+        Pair<Float, Float>?)? = null,
 ) {
     suspend fun run(task: String, language: String, screenW: Int, screenH: Int): AgentRun {
         val steps = mutableListOf<AgentStep>()
         var index = 0
+        var deadSteps = 0
         while (true) {
             onState(AgentState.PLANNING)
             if (index >= stepCap) {
@@ -54,15 +63,27 @@ class AgentRunner(
             }
             onState(AgentState.ACTING)
             val before = driver.screenshot()
+            // SAM refina el toque: Meta propone el punto, la máscara
+            // del objeto manda y el tap cae en su centro real.
+            var toExecute = action
+            if (tapRefiner != null && action is AgentAction.Tap &&
+                before != null
+            ) {
+                val refined = tapRefiner.invoke(before, action)
+                if (refined != null) {
+                    toExecute = action.copy(
+                        x = refined.first, y = refined.second)
+                }
+            }
             val start = SystemClock.elapsedRealtime()
-            val result = execute(action)
+            val result = execute(toExecute)
             val latency = SystemClock.elapsedRealtime() - start
 
             onState(AgentState.VERIFYING)
             // Espera a que la pantalla reaccione (animaciones, teclado,
             // transiciones): comparar en frío marcaba como fallo
             // acciones que sí funcionaron ("algo salió mal" falso).
-            delay(500)
+            delay(300)
             var after = driver.screenshot()
             var verified = if (before != null && after != null) {
                 Verifier.changedEnough(before, after)
@@ -73,7 +94,7 @@ class AgentRunner(
             if (!verified && result.success && before != null) {
                 // Segunda oportunidad: cambios lentos (teclado que
                 // sube, app que abre) tardan más de medio segundo.
-                delay(800)
+                delay(600)
                 after = driver.screenshot()
                 verified = after != null &&
                     Verifier.changedEnough(before, after)
@@ -82,16 +103,27 @@ class AgentRunner(
             steps.add(
                 AgentStep(
                     index = index,
-                    action = action,
+                    action = toExecute,
                     latencyMs = latency,
                     tokensUsed = tokens,
                     success = ok,
-                    detail = result.detail,
+                    detail = if (ok) result.detail
+                    else "sin cambio visible o driver falló: ${result.detail}",
                 ),
             )
             if (!ok) {
-                onState(AgentState.FAILED)
-                return AgentRun(task, language, steps, success = false)
+                // Un paso sin cambio NO mata la tarea: tocar el cuadro
+                // de mensajes ya enfocado (o una pestaña ya activa) no
+                // cambia píxeles y aun así es correcto. El planificador
+                // ve la pantalla siguiente y decide (escribir, done).
+                // Solo se rinde tras 3 pasos muertos seguidos.
+                deadSteps++
+                if (deadSteps >= 3) {
+                    onState(AgentState.FAILED)
+                    return AgentRun(task, language, steps, success = false)
+                }
+            } else {
+                deadSteps = 0
             }
             index++
         }

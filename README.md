@@ -142,6 +142,11 @@ are never committed).
   `app/src/main/res/drawable/ic_lucide_*.xml`, license in `docs/licenses/`
 - Atkinson Hyperlegible font (SIL Open Font License 1.1), Braille Institute
   of America — fonts in `app/src/main/res/font/`, license in `docs/licenses/`
+- SAM 2 (Segment Anything 2, Meta, Apache 2.0) — optional on-device
+  tap refinement; ONNX models are downloaded separately and never
+  committed. Integration adapted from Segment-Anything-Android
+  (Shubham Panchal, Apache 2.0).
+- ONNX Runtime for Android (Microsoft, MIT).
 - AndroidX libraries (Compose, Activity, Core, Lifecycle).
 - Muse Code (development assistant).
 - Python standard library only for the harness; no third-party packages.

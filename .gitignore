@@ -21,3 +21,6 @@ results/screenshots/
 # Depuración de coordenadas Meta: captura que vio el modelo, acción
 # cruda y acción escalada por paso. Solo local.
 results/debug/
+# Modelos SAM2 (.onnx): pesados y con su propia licencia; se descargan
+# de HuggingFace y viven solo en el teléfono/proyecto local.
+*.onnx

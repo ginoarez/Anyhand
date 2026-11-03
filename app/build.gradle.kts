@@ -50,6 +50,10 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
+    // SAM2 en el teléfono (refinar toques con máscaras). Los modelos
+    // .onnx NO van en el repo: se descargan aparte (ver SamRefiner).
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
