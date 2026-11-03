@@ -197,22 +197,43 @@ def plan_step(task, lang, png_bytes, width, height, step=0, cap=10,
     except Exception as exc:
         raise MetaError(f"la API no respondió: {exc}") from exc
     action, in_tok, out_tok = parse_response(payload)
-    scaled = scale_action(action, upscale)
+    scaled = scale_action(action, upscale, small_w, small_h,
+                          width, height)
     _save_debug(small_png, task, step, action, scaled,
                 small_w, small_h, upscale)
     return scaled, in_tok, out_tok
 
 
-def scale_action(action, upscale):
-    """Coordenadas del modelo (captura chica) -> píxeles reales."""
+def scale_action(action, upscale, small_w=0, small_h=0,
+                 width=0, height=0):
+    """Coordenadas del modelo -> píxeles reales, sin doble escala.
+
+    El modelo a veces ignora la escala pedida y devuelve coordenadas
+    ya en píxeles reales: multiplicarlas otra vez mandaba el toque al
+    borde (el famoso tap 1012 736 = 506x2). Regla: si el punto cabe en
+    la captura chica, se escala; si solo cabe en la pantalla real, ya
+    venía en escala real y va tal cual; fuera de ambas, se recorta.
+    """
+    def fix(x, y):
+        if small_w and x <= small_w and y <= small_h:
+            return x * upscale, y * upscale, "captura"
+        if width and x <= width and y <= height:
+            return x, y, "real"
+        if width:
+            return (min(max(x, 0), width - 1),
+                    min(max(y, 0), height - 1), "recortada")
+        return x * upscale, y * upscale, "captura"
+
     kind = action[0]
     if kind == "tap":
         _, x, y = action
-        return ("tap", x * upscale, y * upscale)
+        rx, ry, _ = fix(x, y)
+        return ("tap", rx, ry)
     if kind == "swipe":
         _, x1, y1, x2, y2, ms = action
-        return ("swipe", x1 * upscale, y1 * upscale,
-                x2 * upscale, y2 * upscale, ms)
+        rx1, ry1, _ = fix(x1, y1)
+        rx2, ry2, _ = fix(x2, y2)
+        return ("swipe", rx1, ry1, rx2, ry2, ms)
     return action
 
 
