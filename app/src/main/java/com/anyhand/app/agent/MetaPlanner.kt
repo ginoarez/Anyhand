@@ -50,7 +50,7 @@ fun buildPlannerPrompt(
     if (!nodes.isNullOrBlank()) {
         sb.append("Elementos en pantalla (centro en píxeles reales, ")
         sb.append("re-escala a la captura):\n")
-        sb.append(nodes.take(3500)).append('\n')
+        sb.append(nodes.take(2500)).append('\n')
     }
     return sb.toString()
 }
@@ -104,8 +104,8 @@ class MetaPlanner(
         val conn = (URL("https://api.meta.ai/v1/responses").openConnection()
             as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 120_000
-            readTimeout = 120_000
+            connectTimeout = 60_000
+            readTimeout = 60_000
             doOutput = true
             setRequestProperty("Authorization", "Bearer $apiKey")
             setRequestProperty("Content-Type", "application/json")
