@@ -805,6 +805,11 @@ fun AnyhandApp() {
                         return
                     }
                     when (val step = policy.onHeard(heard)) {
+                        VoiceStep.ConfirmYes, VoiceStep.ConfirmNo -> {
+                            // En la app la confirmación va por el
+                            // diálogo (sendGate); aquí no aplica.
+                            syncPolicy()
+                        }
                         VoiceStep.KeepListening, VoiceStep.WakeArmed -> {
                             if (heard != null) heardLive = heard
                             syncPolicy()

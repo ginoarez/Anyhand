@@ -53,6 +53,7 @@ class AgentVoiceService : Service() {
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
     private var running = false
+    private var orderJob: kotlinx.coroutines.Job? = null
     private var orbView: OrbView? = null
     private var overlayRoot: android.view.View? = null
     private var overlayParams: WindowManager.LayoutParams? = null
@@ -156,9 +157,11 @@ class AgentVoiceService : Service() {
                 lastPartial = ""
                 // Cara de escucha en cuanto el micrófono abre.
                 handler.post {
-                    if (!running) orbView?.mood =
-                        if (policy.awaitingOrder) Mood.ESCUCHANDO
-                        else Mood.DORMIDO
+                    if (!running) orbView?.mood = when {
+                        policy.awaitingConfirm -> Mood.CONFIRMAR
+                        policy.awaitingOrder -> Mood.ESCUCHANDO
+                        else -> Mood.DORMIDO
+                    }
                 }
             }
             override fun onBeginningOfSpeech() {
@@ -223,6 +226,12 @@ class AgentVoiceService : Service() {
                     setCaption(heard)
                 }
                 when (val step = policy.onHeard(heard)) {
+                    VoiceStep.ConfirmYes -> executeSendNow()
+                    VoiceStep.ConfirmNo -> {
+                        setMood(Mood.DORMIDO, "Cancelado; el texto sigue ahí")
+                        Log.d("AnyhandVoice", "fondo envío cancelado por voz")
+                        restartSoon()
+                    }
                     VoiceStep.KeepListening -> restartSoon()
                     VoiceStep.WakeArmed -> {
                         showOrb(active = true)
@@ -315,7 +324,7 @@ class AgentVoiceService : Service() {
             resources.displayMetrics.heightPixels)
         if (quickSwipe is AgentAction.Swipe) {
             setMood(Mood.TOCANDO, "Deslizando…")
-            scope.launch {
+            orderJob = scope.launch {
                 val r = AccessibilityDriver().swipe(
                     quickSwipe.x1, quickSwipe.y1,
                     quickSwipe.x2, quickSwipe.y2, quickSwipe.durationMs)
@@ -334,7 +343,7 @@ class AgentVoiceService : Service() {
         // Borrar el texto del cuadro: "borra lo que escribiste",
         // "borra lo anterior"... Se limpia el campo y listo.
         if (isClearTextTask(order)) {
-            scope.launch {
+            orderJob = scope.launch {
                 val driver = AccessibilityDriver()
                 val center = editableCenter(driver.dumpNodes())
                 var ok = false
@@ -361,7 +370,7 @@ class AgentVoiceService : Service() {
         // Enviar/Send; Meta ya no adivina ese toque y lo erraba.
         val sendText = extractSendText(order)
         if (sendText != null || isSendOnlyTask(order)) {
-            scope.launch {
+            orderJob = scope.launch {
                 val driver = AccessibilityDriver()
                 var ok = true
                 if (sendText != null) {
@@ -379,21 +388,19 @@ class AgentVoiceService : Service() {
                     return@launch
                 }
                 // Enviar es irreversible: JAMÁS se toca Enviar sin
-                // confirmación. Se escribe el texto (reversible), se
-                // deja la petición pendiente y la app al frente pide
-                // el sí (por voz o toque). Sin sí, no se envía nada.
-                getSharedPreferences("anyhand", MODE_PRIVATE).edit()
-                    .putLong("pending_send", System.currentTimeMillis())
-                    .apply()
+                // confirmación. Pero la confirmación es POR VOZ y
+                // AQUÍ MISMO, sin arrastrar al usuario a la app:
+                // el servicio sigue escuchando y tu "sí" envía;
+                // tu "no" cancela y el texto se queda en el cuadro.
+                policy.expectConfirm()
                 Log.d("AnyhandVoice",
-                    "fondo envío pendiente de confirmación")
-                setMood(Mood.CONFIRMAR, "¿Envío el mensaje? Di sí o no")
-                bringAppToFront()
+                    "fondo esperando sí/no para enviar")
+                setMood(Mood.CONFIRMAR, "¿Lo envío? Di sí o no")
                 running = false
                 handler.postDelayed({
                     policy.resumeContinuous()
                     showOrb(active = true)
-                    setCaption("Te escucho…")
+                    setCaption(if (policy.awaitingConfirm) "¿Lo envío? Di sí o no" else "Te escucho…")
                     startSentry()
                 }, 400)
             }
@@ -404,7 +411,7 @@ class AgentVoiceService : Service() {
         // o la app que sea) y se escribe. Sin planificador.
         val writeText = extractWriteText(order)
         if (writeText != null || isOpenKeyboardTask(order)) {
-            scope.launch {
+            orderJob = scope.launch {
                 val driver = AccessibilityDriver()
                 val center = editableCenter(driver.dumpNodes())
                 if (center != null) {
@@ -451,7 +458,7 @@ class AgentVoiceService : Service() {
         val metrics = resources.displayMetrics
         Log.d("AnyhandVoice",
             "fondo orden=«$order» planificador=$mode")
-        scope.launch {
+        orderJob = scope.launch {
             try {
                 val sam = SamRefiner.get(this@AgentVoiceService)
                 val samRefiner:
@@ -496,6 +503,9 @@ class AgentVoiceService : Service() {
                         result.steps.joinToString {
                             "${it.action} ok=${it.success} ${it.detail}"
                         })
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Corte del usuario (doble toque): no es un error.
+                Log.d("AnyhandVoice", "orden cancelada por el usuario")
             } catch (e: Throwable) {
                 Log.d("AnyhandVoice", "orden de fondo falló: ${e.message}")
                 setMood(Mood.ERROR,
@@ -512,6 +522,34 @@ class AgentVoiceService : Service() {
                     startSentry()
                 }, 1200)
             }
+        }
+    }
+
+    /** El usuario dijo "sí": tocar Enviar donde esté el botón. */
+    private fun executeSendNow() {
+        orderJob = scope.launch {
+            val driver = AccessibilityDriver()
+            val nodes = driver.dumpNodes()
+            val center = sendButtonCenter(nodes)
+                ?: editableCenter(nodes)?.let { ec ->
+                    (resources.displayMetrics.widthPixels * 0.93f) to
+                        ec.second
+                }
+            if (center != null) {
+                setMood(Mood.TOCANDO, "Enviando…")
+                driver.tap(center.first, center.second)
+                Log.d("AnyhandVoice", "fondo enviado en $center")
+                setMood(Mood.LISTO, "Enviado")
+            } else {
+                Log.d("AnyhandVoice", "fondo sin botón de enviar")
+                setMood(Mood.ERROR, "No encontré el botón de enviar")
+            }
+            handler.postDelayed({
+                policy.resumeContinuous()
+                showOrb(active = true)
+                setCaption("Te escucho…")
+                startSentry()
+            }, 500)
         }
     }
 
@@ -658,12 +696,42 @@ class AgentVoiceService : Service() {
                     if (dragging) {
                         dragging = false
                         snapToCorner(row, params)
+                    } else if (
+                        event.actionMasked ==
+                        android.view.MotionEvent.ACTION_UP
+                    ) {
+                        // Doble toque al avatar: cortar la orden en
+                        // curso ya, sin esperar a que Meta responda.
+                        val now = android.os.SystemClock.uptimeMillis()
+                        if (now - lastTapAt < 400) {
+                            lastTapAt = 0
+                            cancelCurrentOrder()
+                        } else {
+                            lastTapAt = now
+                        }
                     }
                     true
                 }
                 else -> false
             }
         }
+    }
+
+    private var lastTapAt = 0L
+
+    /** Doble toque: cancela la orden en curso y vuelve a escuchar. */
+    private fun cancelCurrentOrder() {
+        Log.d("AnyhandVoice", "orden cortada por doble toque")
+        orderJob?.cancel()
+        orderJob = null
+        running = false
+        setMood(Mood.ERROR, "Cancelado")
+        handler.postDelayed({
+            policy.resumeContinuous()
+            showOrb(active = true)
+            setCaption("Te escucho…")
+            startSentry()
+        }, 600)
     }
 
     /** Pega el avatar a la esquina cercana y voltea el texto. */

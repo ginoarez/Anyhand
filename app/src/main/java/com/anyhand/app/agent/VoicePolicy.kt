@@ -173,6 +173,12 @@ fun stripWakeWord(heard: String, wakeWord: String = WAKE_WORD): String {
  * abrir/cerrar el micrófono y mostrar el texto que corresponda.
  */
 sealed interface VoiceStep {
+    /** El usuario confirmó con "sí" una acción pendiente. */
+    data object ConfirmYes : VoiceStep
+
+    /** El usuario rechazó con "no" una acción pendiente. */
+    data object ConfirmNo : VoiceStep
+
     /** Seguir escuchando sin actuar (habla sin la palabra, fallo leve). */
     data object KeepListening : VoiceStep
     /** Solo dijo la palabra: esperar la orden directa con más paciencia. */
@@ -222,6 +228,7 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
 
     /** Apertura por voz (cadena, centinela, Detener): configura exigencia. */
     fun openVoice(requireWake: Boolean, quiet: Boolean) {
+        awaitingConfirm = false
         continuous = false
         this.requireWake = requireWake
         this.quiet = quiet
@@ -248,6 +255,7 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
 
     /** Cierre total: apaga exigencia, espera y racha. */
     fun stop() {
+        awaitingConfirm = false
         continuous = false
         requireWake = false
         quiet = false
@@ -268,8 +276,27 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
      * Texto oído (null = resultado vacío). Nunca lanza: siempre devuelve
      * el paso a seguir.
      */
+    /** ¿Se espera un sí/no por voz para una acción irreversible? */
+    var awaitingConfirm = false
+        private set
+
+    /** La siguiente frase del usuario es la respuesta sí/no. */
+    fun expectConfirm() {
+        awaitingConfirm = true
+        streak = 0
+    }
+
     fun onHeard(heard: String?): VoiceStep {
         if (heard == null) return onFailure()
+        if (awaitingConfirm) {
+            val answer = confirmAnswer(heard)
+            if (answer != null) {
+                awaitingConfirm = false
+                return if (answer) VoiceStep.ConfirmYes
+                else VoiceStep.ConfirmNo
+            }
+            return VoiceStep.KeepListening
+        }
         if (requireWake && !awaitingOrder && !containsWakeWord(heard, wakeWord)) {
             // Se oyó habla (aunque sin la palabra): el micrófono vive,
             // la racha de fallos se reinicia.
@@ -280,6 +307,20 @@ class VoicePolicy(wakeWord: String = WAKE_WORD) {
             stripWakeWord(heard, wakeWord)
         } else heard
         if (order.isBlank()) {
+            awaitingOrder = true
+            streak = 0
+            return VoiceStep.WakeArmed
+        }
+        // Palabra mal oída: venía la palabra (o un eco suyo) y el
+        // resto es una sola palabrita corta ("can't" de "can't
+        // hand"): eso no es una orden, es el despertar fallando.
+        // Se vuelve a esperar en vez de mandar basura al planeador.
+        val singleShort = order.split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+        if (containsWakeWord(heard, wakeWord) &&
+            singleShort.size == 1 &&
+            normalizeSpeech(order).replace(Regex("[^a-z]"), "").length <= 4
+        ) {
             awaitingOrder = true
             streak = 0
             return VoiceStep.WakeArmed
