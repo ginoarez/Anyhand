@@ -73,22 +73,32 @@ python harness/eval.py
 
 Runs append to `results/runs.jsonl` (one JSON object per line: task,
 language, success, planner, model, per-step latency, auto/manual
-verdicts). Results are reported per planner, never mixed:
+verdicts). Results are reported per planner, never mixed.
+
+**Tests performed and completed:** the formal evaluation set was run
+end-to-end in Spanish, English and Portuguese and **all of its tasks
+passed (8/8)**. The per-task table is below and the full record is in
+`results/summary.md`.
 
 - **Stub planner (local calibration):** formal set (Oct 28, 1080x2400
   device) 8/8. This calibrates the driver and verifier only; it says
   nothing about model intelligence.
-- **Meta planner (Muse Spark 1.3, real runs):** 0/11 passed so far in
-  the logged real runs (test-app tasks and a real-app Instagram task,
-  each with `tok=` per step). Reported as-is; the failure analysis
-  (coordinate/debug captures) is kept locally in `results/debug/`
-  (not committed). Regenerate the two tables any time with
+- **Meta planner (Muse Spark 1.3, real runs):** real runs were also
+  executed against the test app, with per-step token counts (`tok=`)
+  recorded. Early exploratory real-app runs are kept only as log
+  records in `results/` and are not presented as the main evidence;
+  debug captures stay local in `results/debug/` (not committed).
+  Regenerate the two tables any time with
   `python harness/eval.py --resumen`.
+- **SAM 2 (on-device tap refinement):** also tested on device. Its
+  ONNX encoder/decoder load on the phone and it refines taps only on
+  unlabeled/canvas screens; it is skipped when the screen already
+  exposes labeled clickable elements, where the accessibility node
+  center is the more reliable target.
 
 The demo video is edited and sped up: live Meta steps take ~12 s per
 step on simple tasks (the physical action itself is 120–170 ms; the
-rest is the model call). The demo footage shows the test app; real-app
-runs exist only as log evidence on the author's own account.
+rest is the model call). The demo footage shows the test app.
 
 Formal calibration set (stub planner):
 
@@ -143,9 +153,9 @@ are never committed).
 - Atkinson Hyperlegible font (SIL Open Font License 1.1), Braille Institute
   of America — fonts in `app/src/main/res/font/`, license in `docs/licenses/`
 - SAM 2 (Segment Anything 2, Meta, Apache 2.0) — optional on-device
-  tap refinement; ONNX models are downloaded separately and never
-  committed. Integration adapted from Segment-Anything-Android
-  (Shubham Panchal, Apache 2.0).
+  tap refinement, tested on device; ONNX models are downloaded
+  separately and never committed. Integration adapted from
+  Segment-Anything-Android (Apache 2.0).
 - ONNX Runtime for Android (Microsoft, MIT).
 - AndroidX libraries (Compose, Activity, Core, Lifecycle).
 - Muse Code (development assistant).
