@@ -50,7 +50,20 @@ class SamRefiner private constructor(
                 val embedding = embeddingFor(shot) ?: return@withContext null
                 val mask = decode(shot, embedding, x, y)
                     ?: return@withContext null
-                centroid(mask, shot.width, shot.height)
+                val center = centroid(mask, shot.width, shot.height)
+                    ?: return@withContext null
+                // Guardarraíl: SAM refina CERCA del punto pedido. Si
+                // el centro de la máscara cae lejos (otra fila de la
+                // lista), se descarta y va el punto original.
+                val dx = center.first - x
+                val dy = center.second - y
+                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                if (dist > shot.height * 0.08f) {
+                    Log.d("AnyhandSAM",
+                        "refine descartado: salto de ${dist.toInt()}px")
+                    return@withContext null
+                }
+                center
             } catch (e: Throwable) {
                 // Throwable y no solo Exception: un fallo nativo de
                 // ONNX (UnsatisfiedLinkError) jamás debe tumbar la
@@ -59,6 +72,14 @@ class SamRefiner private constructor(
                 null
             }
         }
+
+    /** Salidas ONNX: unas vienen como tensor y otras en Optional. */
+    private fun tensorOf(value: Any?): OnnxTensor? = when (value) {
+        is OnnxTensor -> value
+        is java.util.Optional<*> ->
+            value.orElse(null) as? OnnxTensor
+        else -> null
+    }
 
     private fun centroid(
         mask: FloatArray,
@@ -84,7 +105,9 @@ class SamRefiner private constructor(
             Log.d("AnyhandSAM", "máscara descartada fracción=$fraction")
             return null
         }
-        return (sumX.toFloat() / count) to (sumY.toFloat() / count)
+        val cx = sumX.toFloat() / count
+        val cy = sumY.toFloat() / count
+        return cx to cy
     }
 
     private suspend fun embeddingFor(shot: Bitmap): Array<FloatBuffer>? {
@@ -121,7 +144,8 @@ class SamRefiner private constructor(
         // Orden del decoder SAM2: highRes0, highRes1, embedding. El
         // encoder los emite como [highRes0, highRes1, embedding].
         val buffers = Array(names.size) { idx ->
-            (outputs[names[idx]] as OnnxTensor).floatBuffer
+            tensorOf(outputs[names[idx]])?.floatBuffer
+                ?: throw IllegalStateException("salida ONNX no tensor")
         }
         cachedShot = shot
         cachedEmbedding = buffers
@@ -157,9 +181,10 @@ class SamRefiner private constructor(
         map["orig_im_size"] = OnnxTensor.createTensor(
             env, IntBuffer.wrap(intArrayOf(h, w)), longArrayOf(2))
         val outputs = decoderSession.run(map)
-        val maskBuf = (outputs[outputsNames[0]] as OnnxTensor).floatBuffer
-        val scores = (outputs[outputsNames[1]] as OnnxTensor)
-            .floatBuffer.array()
+        val maskBuf = tensorOf(outputs[outputsNames[0]])?.floatBuffer
+            ?: return null
+        val scores = tensorOf(outputs[outputsNames[1]])
+            ?.floatBuffer?.array() ?: return null
         if (scores.isEmpty()) return null
         var best = 0
         for (i in scores.indices) {
