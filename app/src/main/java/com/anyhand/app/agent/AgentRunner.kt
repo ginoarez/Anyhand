@@ -12,6 +12,30 @@ import kotlinx.coroutines.delay
  * @param onState difunde el estado para la UI. Se invoca en el hilo que
  *   llama a [run]; la UI debe dirigirlo a su scope.
  */
+/**
+ * ¿El punto cae (casi) sobre el centro de un elemento tocable con
+ * etiqueta? Entonces Meta ya fue preciso y SAM sobra.
+ */
+private fun nearLabeledCenter(
+    nodes: String?,
+    x: Float,
+    y: Float,
+    radius: Float = 60f,
+): Boolean {
+    if (nodes.isNullOrBlank()) return false
+    val regex = Regex("""centro=\[(\d+),(\d+)]""")
+    for (line in nodes.lineSequence()) {
+        if ("tocable=si" !in line) continue
+        val m = regex.find(line) ?: continue
+        val cx = m.groupValues[1].toFloat()
+        val cy = m.groupValues[2].toFloat()
+        val dx = cx - x
+        val dy = cy - y
+        if (dx * dx + dy * dy <= radius * radius) return true
+    }
+    return false
+}
+
 class AgentRunner(
     private val driver: Driver,
     private val needsConfirmation: suspend (AgentAction) -> Boolean = { false },
@@ -52,6 +76,24 @@ class AgentRunner(
                 return AgentRun(task, language, steps, success = true)
             }
             val action = next.action ?: break
+            // Guardarraíl anti-deshacer: tras un paso exitoso ya
+            // verificado, si el modelo pide ir ATRÁS (tecla Back o la
+            // flecha superior izquierda), es que ya está en el
+            // destino y no supo declarar done: se toma como cumplido
+            // y NO se ejecuta. Tres registros seguidos mostraron ese
+            // bucle (abrir el contacto y devolverse al instante).
+            val isBackAction = when (action) {
+                is AgentAction.KeyPress ->
+                    action.key.equals("Back", ignoreCase = true)
+                is AgentAction.Tap ->
+                    action.x < screenW * 0.15f &&
+                        action.y < screenH * 0.12f
+                else -> false
+            }
+            if (isBackAction && steps.any { it.success }) {
+                onState(AgentState.DONE)
+                return AgentRun(task, language, steps, success = true)
+            }
             val tokens = next.inTokens + next.outTokens
             if (ConfirmationGate.requiresConfirmation(task, action)) {
                 onState(AgentState.AWAITING_CONFIRMATION)
@@ -64,10 +106,20 @@ class AgentRunner(
             onState(AgentState.ACTING)
             val before = driver.screenshot()
             // SAM refina el toque: Meta propone el punto, la máscara
-            // del objeto manda y el tap cae en su centro real.
+            // del objeto manda y el tap cae en su centro real. PERO
+            // si el toque ya cae sobre un elemento CON etiqueta, SAM
+            // no aporta nada y cuesta segundos: se salta. SAM es
+            // para pantallas sin etiquetas (juegos, canvas).
             var toExecute = action
+            // SAM solo donde no hay etiquetas que valgan (juegos,
+            // canvas): en pantallas con varios elementos tocables
+            // etiquetados solo estorba (segmenta media pantalla y
+            // quema segundos por toque).
+            val labeledClickables = nodes?.lineSequence()
+                ?.count { "tocable=si" in it } ?: 0
             if (tapRefiner != null && action is AgentAction.Tap &&
-                before != null
+                before != null && labeledClickables <= 2 &&
+                !nearLabeledCenter(nodes, action.x, action.y)
             ) {
                 val refined = tapRefiner.invoke(before, action)
                 if (refined != null) {
@@ -124,6 +176,24 @@ class AgentRunner(
                 }
             } else {
                 deadSteps = 0
+                // Corte de un solo toque: si la orden NO es secuencial
+                // (sin "entra y busca", "y escribe"...) y el primer
+                // toque cayó en un elemento etiquetado con cambio
+                // verificado, la tarea YA terminó. Pedirle a Meta que
+                // lo confirme solo lograba que tocara la flecha de
+                // atrás y repitiera todo (visto en registros).
+                val sequential = Regex(
+                    "\\b(y|e|luego|despues|entra|entrar|busca|buscar|" +
+                        "manda|mandar|envia|enviar|escribe|escribir|" +
+                        "and|then|depois)\\b",
+                ).containsMatchIn(task.lowercase())
+                if (index == 0 && toExecute is AgentAction.Tap &&
+                    !sequential &&
+                    nearLabeledCenter(nodes, toExecute.x, toExecute.y)
+                ) {
+                    onState(AgentState.DONE)
+                    return AgentRun(task, language, steps, success = true)
+                }
             }
             index++
         }
