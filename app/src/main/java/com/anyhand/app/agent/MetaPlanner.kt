@@ -38,6 +38,15 @@ fun buildPlannerPrompt(
     sb.append("Paso ${step + 1}. La captura mide ${shotW}x$shotH píxeles: ")
     sb.append("da las coordenadas en ESA escala.\n")
     sb.append("Piensa sobre lo que se ve AHORA en la pantalla antes de actuar. ")
+    sb.append("Si la pantalla actual YA es el resultado pedido (ya estás ")
+    sb.append("en el contacto, pantalla o estado que se pidió), responde ")
+    sb.append("action=done de inmediato: nunca deshagas lo logrado ni ")
+    sb.append("toques la flecha de atrás salvo que la tarea lo pida. ")
+    sb.append("Para elegir por posición (el cuarto contacto, el primer ")
+    sb.append("chat), cuenta SOLO los renglones con nombre de la lista de ")
+    sb.append("elementos de abajo, en orden de arriba a abajo, y toca el ")
+    sb.append("centro exacto del renglón pedido: no cuentes botones de ")
+    sb.append("las barras superior e inferior ni te fíes solo de la foto. ")
     sb.append("Si la tarea pide volver, salir de una conversación o ver la ")
     sb.append("lista anterior, usa key Back o toca la flecha de arriba a la ")
     sb.append("izquierda. Si un elemento con etiqueta sirve, toca su centro ")
@@ -48,9 +57,10 @@ fun buildPlannerPrompt(
         sb.append("Ya se hizo:\n").append(history).append('\n')
     }
     if (!nodes.isNullOrBlank()) {
-        sb.append("Elementos en pantalla (centro en píxeles reales, ")
-        sb.append("re-escala a la captura):\n")
-        sb.append(nodes.take(2500)).append('\n')
+        sb.append("Elementos en pantalla (centro YA en la escala de ")
+        sb.append("la captura; para listas cuenta los renglones en ")
+        sb.append("orden desde arriba):\n")
+        sb.append(nodes.take(4000)).append('\n')
     }
     return sb.toString()
 }
@@ -83,8 +93,29 @@ class MetaPlanner(
             it.compress(Bitmap.CompressFormat.JPEG, 70, out)
             Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
         } ?: throw IllegalStateException("sin captura para el modelo")
+        // Los centros de los nodos vienen en píxeles REALES y la
+        // captura va a mitad de escala: se convierten AQUÍ a la
+        // escala de la captura. Antes el modelo tenía que re-escalar
+        // de cabeza y se corría un renglón (abría el 3er contacto
+        // pidiendo el 4º).
+        val scaledNodes = nodes?.let {
+            val rx = small!!.width.toDouble() / screenW
+            val ry = small.height.toDouble() / screenH
+            val scaled = Regex("""centro=\[(\d+),(\d+)]""").replace(it) { m ->
+                val cx = (m.groupValues[1].toDouble() * rx).toInt()
+                val cy = (m.groupValues[2].toDouble() * ry).toInt()
+                "centro=[$cx,$cy]"
+            }
+            // Solo elementos accionables: el volcado crudo gastaba el
+            // límite en clases y contenedores, y la lista de renglones
+            // que el modelo debe contar llegaba cortada.
+            scaled.lineSequence()
+                .filter { l -> "tocable=si" in l || "editable=si" in l }
+                .joinToString("\n")
+        }
         val prompt = buildPlannerPrompt(
-            task, lang, step, small!!.width, small.height, nodes, history)
+            task, lang, step, small!!.width, small.height,
+            scaledNodes, history)
         val body = JSONObject()
             .put("model", model)
             .put("store", false)
@@ -110,13 +141,24 @@ class MetaPlanner(
             setRequestProperty("Authorization", "Bearer $apiKey")
             setRequestProperty("Content-Type", "application/json")
         }
+        // Traza en vivo para el video: cada call a Meta se ve en la
+        // terminal con `adb logcat -s AnyhandMeta` (sin la clave).
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("AnyhandMeta",
+            "→ call $model step=${step + 1} task=\"$task\"")
         try {
             conn.outputStream.use { it.write(body.toString().toByteArray()) }
             val code = conn.responseCode
             val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
                 ?.bufferedReader()?.readText().orEmpty()
             if (code !in 200..299) throw IllegalStateException("Meta HTTP $code: $raw")
-            parse(JSONObject(raw), small.width, small.height, screenW, screenH)
+            val next = parse(JSONObject(raw), small.width, small.height,
+                screenW, screenH)
+            val ms = android.os.SystemClock.elapsedRealtime() - startedAt
+            android.util.Log.d("AnyhandMeta",
+                "← ${ms}ms tok_in=${next.inTokens} tok_out=${next.outTokens} " +
+                    "action=${next.action ?: "done"}")
+            next
         } finally {
             conn.disconnect()
         }
